@@ -96,73 +96,34 @@ interface Project {
 
 // ... 내부에 타입 적용
 
-const PREVIEWABLE_EXTENSIONS =
-  new Set([
-    ".md",
-    ".markdown",
-    ".mmd",
-    ".puml",
-    ".pdf",
-    ".txt",
-    ".log",
-    ".cs",
-    ".c",
-    ".cpp",
-    ".cc",
-    ".h",
-    ".hpp",
-    ".m",
-    ".mm",
-    ".py",
-    ".js",
-    ".jsx",
-    ".ts",
-    ".tsx",
-    ".json",
-    ".yaml",
-    ".yml",
-    ".xml",
-    ".html",
-    ".css",
-    ".sh",
-    ".sql",
-    ".rs",
-    ".go",
-    ".java",
-    ".swift",
-    ".kt",
-  ])
-
-const BINARY_EXTENSIONS = new Set([
-  ".exe", ".dll", ".so", ".dylib",
+const ALLOWED_EXTENSIONS = new Set([
+  // Shiki code
+  ".cs", ".c", ".cpp", ".cc", ".h", ".hpp", ".m", ".mm", ".py", ".js", ".jsx", ".ts", ".tsx",
+  ".java", ".kt", ".scala", ".rs", ".go", ".swift", ".dart",
+  ".hs", ".ex", ".erl", ".fs", ".clj",
+  ".json", ".jsonc", ".yaml", ".yml", ".toml", ".xml", ".csv",
+  ".css", ".scss", ".sass", ".less",
+  ".sh", ".bash", ".ps1", ".bat",
+  ".sql", ".graphql",
+  ".ini", ".dockerfile", ".docker", ".makefile", ".cmake",
+  ".diff", ".patch", ".md", ".markdown", ".tex",
+  ".txt", ".log",
+  // Specific requested
+  ".env", ".gitignore", ".dockerignore",
+  // Media / Diagrams
+  ".mmd", ".puml", ".html", ".pdf",
   ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".avif",
-  ".mp3", ".mp4", ".avi", ".mov", ".mkv", ".webm", ".flac", ".wav",
-  ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z",
-  ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-  ".db", ".sqlite", ".sqlite3",
-  ".o", ".obj", ".a", ".lib",
 ])
 
 function isPreviewableFile(
   fileName,
 ) {
-  const dotIndex =
-    fileName.lastIndexOf(".")
-
+  const dotIndex = fileName.lastIndexOf(".")
   if (dotIndex < 0) {
-    return true
+    return [".env", ".gitignore", ".dockerignore"].includes(fileName.toLowerCase())
   }
-
-  const ext =
-    fileName
-      .slice(dotIndex)
-      .toLowerCase()
-
-  if (BINARY_EXTENSIONS.has(ext)) {
-    return false
-  }
-
-  return true
+  const ext = fileName.slice(dotIndex).toLowerCase()
+  return ALLOWED_EXTENSIONS.has(ext)
 }
 
 interface PlantUmlViewerProps {
@@ -675,7 +636,7 @@ export default function App() {
         setViewMode("render")
       }
       else {
-        setViewMode("text")
+        setViewMode("render")
       }
     }
     catch (err) {
@@ -936,9 +897,24 @@ export default function App() {
       )
     }
 
-    return (
-      <CodeBlock rendered={previewHtml} symbols={fileData.symbols} />
-    )
+    if (
+      viewMode === "render" &&
+      fileData.type === "code"
+    ) {
+      return (
+        <CodeBlock rendered={fileData.rendered} symbols={fileData.symbols} />
+      )
+    }
+
+    if (
+      viewMode === "text" &&
+      fileData.type === "code"
+    ) {
+        return (
+            <CodeBlock rendered={`<pre><code>${escapeHtml(fileData.raw)}</code></pre>`} />
+        )
+    }
+
   }
 
   const [sidebarVisible, setSidebarVisible] = useState(window.innerWidth > 768);

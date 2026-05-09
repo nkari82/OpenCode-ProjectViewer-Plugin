@@ -201,6 +201,8 @@ async function ensureHighlighter() {
             await createHighlighter({
                 themes: [
                     "monokai",
+                    "dracula",
+                    "vitesse-dark",
                 ],
                 langs: [
                     // Native/System
@@ -389,7 +391,6 @@ app.get("/api/file", async (req, res) => {
         const ext = path
             .extname(file)
             .toLowerCase();
-        console.log(`[viewer] file: ${file}, ext: ${ext}`);
         // @ts-ignore
         if (ext === ".pdf") {
             return res.json({
@@ -490,7 +491,7 @@ ${escapeHtml(raw)}
                 const rendered = activeHighlighter
                     .codeToHtml(raw, {
                     lang,
-                    theme: "monokai",
+                    theme: "vitesse-dark",
                     lineNumbers: true,
                 });
                 let symbols = [];

@@ -373,6 +373,9 @@ async function ensureHighlighter() {
 
         themes: [
           "monokai",
+          "dracula",
+          "vitesse-dark",
+          "github-dark",
         ],
 
         langs: [
@@ -891,7 +894,7 @@ ${escapeHtml(raw)}
                   lang,
 
                   theme:
-                    "monokai",
+                    "github-dark",
 
                   lineNumbers:
                     true,
