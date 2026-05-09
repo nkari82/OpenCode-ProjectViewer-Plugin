@@ -112,18 +112,40 @@ const ALLOWED_EXTENSIONS = new Set([
   ".env", ".gitignore", ".dockerignore",
   // Media / Diagrams
   ".mmd", ".puml", ".html", ".pdf",
-  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".avif",
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".avif", ".svg", ".mp3", ".mp4", ".avi", ".mkv"
 ])
 
+function getFileCategory(fileName: string) {
+  const lowerName = fileName.toLowerCase();
+  
+  // 파일명 패턴 매칭 함수
+  const isSpecialFile = (name: string) => {
+    // 1. 정확히 일치하는 파일들
+    if ([".gitignore", ".dockerignore", ".gitmodules", "dockerfile"].includes(name)) return true;
+    
+    // 2. .env 패턴 매칭 (*.env, .env*, *.env*)
+    // .env가 포함된 모든 파일은 'text'로 분류
+    if (name.includes(".env")) return true;
+    
+    return false;
+  };
+
+  if (isSpecialFile(lowerName)) return "text";
+
+  const dotIndex = fileName.lastIndexOf(".");
+  if (dotIndex < 0) return "unknown";
+  const ext = fileName.slice(dotIndex).toLowerCase();
+  if (!ALLOWED_EXTENSIONS.has(ext)) return "unknown";
+
+  if ([".md", ".markdown", ".mmd", ".puml", ".html"].includes(ext)) return "renderable"
+  if ([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".avif", ".ico", ".svg", ".mp3", ".mp4", ".avi", ".mkv"].includes(ext)) return "media"
+  return "text"
+}
+
 function isPreviewableFile(
-  fileName,
+  fileName: string,
 ) {
-  const dotIndex = fileName.lastIndexOf(".")
-  if (dotIndex < 0) {
-    return [".env", ".gitignore", ".dockerignore"].includes(fileName.toLowerCase())
-  }
-  const ext = fileName.slice(dotIndex).toLowerCase()
-  return ALLOWED_EXTENSIONS.has(ext)
+  return getFileCategory(fileName) !== "unknown"
 }
 
 interface PlantUmlViewerProps {
@@ -242,9 +264,11 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
 interface CodeBlockProps {
   rendered: string;
   symbols?: Symbol[];
+  onFileOpen?: (path: string, name: string) => void;
+  currentPath?: string;
 }
 
-function CodeBlock({ rendered, symbols }: CodeBlockProps) {
+function CodeBlock({ rendered, symbols, onFileOpen, currentPath }: CodeBlockProps) {
   const sanitizedHtml = useMemo(() => DOMPurify.sanitize(rendered), [rendered]);
 
   const scrollToLine = (line: number) => {
@@ -292,6 +316,21 @@ function CodeBlock({ rendered, symbols }: CodeBlockProps) {
       <div className="code-block-content" style={{ maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
         <div
           className="preview-html"
+          onClick={(e) => {
+            const target = (e.target as HTMLElement).closest('a');
+            if (target && onFileOpen && currentPath) {
+              e.preventDefault();
+              const href = target.getAttribute('href');
+              if (href && !href.startsWith('http')) {
+                // Resolve path using current file path
+                const resolved = new URL(href, window.location.origin + currentPath).pathname;
+                const name = resolved.split('/').pop() || resolved;
+                onFileOpen(resolved, name);
+              } else if (href) {
+                window.open(href, '_blank');
+              }
+            }
+          }}
           dangerouslySetInnerHTML={{
             __html: sanitizedHtml,
           }}
@@ -320,6 +359,9 @@ export default function App() {
 
   const [fileData, setFileData] =
     useState<FileData>(EMPTY_FILE_DATA)
+    
+  const [currentPath, setCurrentPath] =
+    useState<string>("")
 
   const [openDirs, setOpenDirs] =
     useState<Set<string>>(() => new Set())
@@ -612,11 +654,12 @@ export default function App() {
   }, [fileData, viewMode])
 
   async function openFile(
-    path,
-    name,
+    path: string,
+    name: string,
   ) {
 
     setTitle(name)
+    setCurrentPath(path)
 
     try {
       const data =
@@ -625,17 +668,11 @@ export default function App() {
         )
 
       setFileData(data)
-
-      if (
-        data.type === "markdown" ||
-        data.type === "plantuml" ||
-        data.type === "mermaid" ||
-        data.type === "pdf" ||
-        data.type === "html"
-      ) {
+      
+      const cat = getFileCategory(name)
+      if (cat === "renderable") {
         setViewMode("render")
-      }
-      else {
+      } else {
         setViewMode("render")
       }
     }
@@ -834,87 +871,43 @@ export default function App() {
       viewMode,
     ])
 
-  const renderToggle =
-    fileData.type === "markdown" ||
-    fileData.type === "html" ||
-    fileData.type === "plantuml" ||
-    fileData.type === "mermaid"
+  const renderToggle = useMemo(() => {
+    const cat = getFileCategory(title)
+    return cat === "renderable"
+  }, [fileData.type, title])
 
-  function renderPreview() {
-    if (
-      viewMode === "render" &&
-      fileData.type === "pdf" &&
-      fileData.url
-    ) {
-      return (
-        <iframe
-          src={fileData.url}
-          className="viewer-frame"
-          title={title || "PDF Preview"}
-        />
-      )
+    function renderPreview() {
+    const cat = getFileCategory(title)
+    
+    // 1. 렌더링 가능한 타입 (Render 모드 전용)
+    if (viewMode === "render" && cat === "renderable") {
+        if (fileData.type === "pdf") {
+            return <iframe src={fileData.url} className="viewer-frame" title={title} />
+        }
+        if (fileData.type === "html") {
+            return <iframe src={fileData.url} className="viewer-frame" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" title={title} />
+        }
+        if (fileData.type === "plantuml") {
+            return <PlantUmlViewer url={fileData.url} title={title} />
+        }
+        // Mermaid/Markdown 등은 rendered(HTML) 사용
+        return <CodeBlock rendered={fileData.rendered} symbols={fileData.symbols} onFileOpen={openFile} currentPath={currentPath} />
     }
 
-    if (
-      viewMode === "render" &&
-      fileData.type === "html" &&
-      fileData.url
-    ) {
-      return (
-        <iframe
-          src={fileData.url}
-          className="viewer-frame"
-          sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-          title={title || "HTML Preview"}
-        />
-      )
+    // 2. 미디어 타입 (항상 렌더링)
+    if (cat === "media") {
+        if (fileData.type === "image") return <img src={fileData.url} alt={title} className="image-preview" />
+        return <iframe src={fileData.url} className="viewer-frame" title={title} />
     }
 
-    if (
-      viewMode === "render" &&
-      fileData.type === "plantuml" &&
-      fileData.url
-    ) {
-      return (
-        <PlantUmlViewer
-          url={fileData.url}
-          title={title || "PlantUML Preview"}
-        />
-      )
+    // 3. 코드/텍스트 (Render vs Text)
+    // Render 모드이거나, Text 모드라도 Shiki로 하이라이팅 가능한 경우 (code 타입)
+    if (viewMode === "render" && fileData.type === "code") {
+      return <CodeBlock rendered={fileData.rendered} symbols={fileData.symbols} onFileOpen={openFile} currentPath={currentPath} />
     }
-
-    if (
-      viewMode === "render" &&
-      fileData.type === "image" &&
-      fileData.url
-    ) {
-      return (
-        <img
-          src={fileData.url}
-          alt={title || "Image Preview"}
-          className="image-preview"
-        />
-      )
-    }
-
-    if (
-      viewMode === "render" &&
-      fileData.type === "code"
-    ) {
-      return (
-        <CodeBlock rendered={fileData.rendered} symbols={fileData.symbols} />
-      )
-    }
-
-    if (
-      viewMode === "text" &&
-      fileData.type === "code"
-    ) {
-        return (
-            <CodeBlock rendered={`<pre><code>${escapeHtml(fileData.raw)}</code></pre>`} />
-        )
-    }
-
+    
+    // 기본 텍스트 렌더링 (Text 모드이거나 Shiki 미지원 렌더러블 타입)
+    return <CodeBlock rendered={`<pre><code>${escapeHtml(fileData.raw)}</code></pre>`} />
   }
 
   const [sidebarVisible, setSidebarVisible] = useState(window.innerWidth > 768);

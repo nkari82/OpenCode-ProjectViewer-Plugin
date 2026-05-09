@@ -203,6 +203,7 @@ async function ensureHighlighter() {
                     "monokai",
                     "dracula",
                     "vitesse-dark",
+                    "github-dark",
                 ],
                 langs: [
                     // Native/System
@@ -491,7 +492,7 @@ ${escapeHtml(raw)}
                 const rendered = activeHighlighter
                     .codeToHtml(raw, {
                     lang,
-                    theme: "vitesse-dark",
+                    theme: "github-dark",
                     lineNumbers: true,
                 });
                 let symbols = [];

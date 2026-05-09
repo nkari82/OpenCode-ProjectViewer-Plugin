@@ -1,0 +1,19 @@
+@startuml
+title 이미지 식별 머신러닝 시스템 설계도
+
+actor User as "사용자"
+participant Client as "클라이언트(React)"
+participant Server as "서버(Express)"
+participant ML_Engine as "머신러닝 엔진"
+database DB as "데이터베이스"
+
+User -> Client: 이미지 업로드
+Client -> Server: API 요청 (이미지 데이터)
+Server -> ML_Engine: 이미지 분석 요청
+ML_Engine -> ML_Engine: 모델 예측 (이미지 식별)
+ML_Engine -> Server: 분석 결과 반환
+Server -> DB: 결과 저장
+Server -> Client: 분석 결과 전달
+Client -> User: 식별 결과 표시
+
+@enduml
