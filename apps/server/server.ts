@@ -690,8 +690,7 @@ app.get(
         path
           .extname(file)
           .toLowerCase()
-
-// @ts-ignore
+      // @ts-ignore
       if (ext === ".pdf") {
 
         return res.json({
@@ -807,10 +806,8 @@ ${escapeHtml(raw)}
 
         ".h":
           "cpp",
-
         ".hpp":
           "cpp",
-
         ".m":
           "objective-c",
 
@@ -877,6 +874,7 @@ ${escapeHtml(raw)}
 
       const lang =
         langMap[ext]
+      console.log(`[viewer] file: ${file}, ext: ${ext}, lang: ${lang}`);
 
       if (lang) {
 

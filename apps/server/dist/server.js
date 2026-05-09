@@ -389,6 +389,7 @@ app.get("/api/file", async (req, res) => {
         const ext = path
             .extname(file)
             .toLowerCase();
+        console.log(`[viewer] file: ${file}, ext: ${ext}`);
         // @ts-ignore
         if (ext === ".pdf") {
             return res.json({
@@ -482,6 +483,7 @@ ${escapeHtml(raw)}
             ".txt": "plaintext",
         };
         const lang = langMap[ext];
+        console.log(`[viewer] file: ${file}, ext: ${ext}, lang: ${lang}`);
         if (lang) {
             const activeHighlighter = await ensureHighlighter();
             if (activeHighlighter) {
