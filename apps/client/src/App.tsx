@@ -799,7 +799,10 @@ export default function App() {
                   return
                 }
 
-                // setSidebarVisible(false) // 파일 선택 시 자동 닫기 제거
+                if (window.innerWidth <= 900) {
+                  setSidebarVisible(false)
+                }
+                
                 openFile(
                   node.path,
                   node.name,
