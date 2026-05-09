@@ -799,7 +799,7 @@ export default function App() {
                   return
                 }
 
-                if (window.innerWidth <= 900) {
+                if (window.innerWidth <= 768) {
                   setSidebarVisible(false)
                 }
                 
@@ -941,7 +941,7 @@ export default function App() {
     )
   }
 
-  const [sidebarVisible, setSidebarVisible] = useState(window.innerWidth > 900);
+  const [sidebarVisible, setSidebarVisible] = useState(window.innerWidth > 768);
 
   return (
     <div className="app-container">
@@ -955,102 +955,106 @@ export default function App() {
       </button>
 
       <div className={`sidebar ${sidebarVisible ? 'visible' : 'hidden'}`}>
-        <button 
-          className="sidebar-close-btn"
-          onClick={() => setSidebarVisible(false)}
-        >
-          &times;
-        </button>
-        <div className="sidebar-title">
-          OpenCode Viewer
-        </div>
-        <div className="project-header">
-          <div
-            className="project-name project-name-clickable"
-            onClick={() =>
-              setShowProjectList(!showProjectList)
-            }
-            title="클릭하여 프로젝트 선택"
+        <div className="sidebar-fixed-header">
+          <button 
+            className="sidebar-close-btn"
+            onClick={() => setSidebarVisible(false)}
           >
-            {projectName || "프로젝트 선택"}
-            <span className="project-arrow">
-              {showProjectList ? "▲" : "▼"}
-            </span>
+            &times;
+          </button>
+          <div className="sidebar-title">
+            OpenCode Viewer
           </div>
-
-          {showProjectList && (
-            <div className="project-list">
-              {projects.length === 0 && (
-                <div className="project-list-empty">
-                  프로젝트 없음
-                </div>
-              )}
-              {projects.map(p => (
-                <div
-                  key={p.id}
-                  className={
-                    p.worktree === root
-                      ? "project-list-item active"
-                      : "project-list-item"
-                  }
-                  onClick={async () => {
-                    setShowProjectList(false)
-                    try {
-                      const resp = await fetch(
-                        "/api/open-project",
-                        {
-                          method: "POST",
-                          headers: {
-                            "Content-Type":
-                              "application/json",
-                          },
-                          body: JSON.stringify(
-                            { path: p.worktree },
-                          ),
-                        },
-                      )
-                      if (resp.ok) {
-                        setRoot(p.worktree)
-                        await loadTree(
-                          p.worktree,
-                        )
-                        await loadProjects()
-                      }
-                    } catch (err) {
-                      console.error(
-                        "switch project failed",
-                        err,
-                      )
-                    }
-                  }}
-                >
-                  <span
-                    className="project-list-color"
-                    style={{
-                      backgroundColor:
-                        p.iconColor ||
-                        "#666",
-                    }}
-                  />
-                  <span className="project-list-name">
-                    {p.name ||
-                      p.worktree.split(
-                        /[\\/]/,
-                      ).pop()}
-                  </span>
-                </div>
-              ))}
+          <div className="project-header">
+            <div
+              className="project-name project-name-clickable"
+              onClick={() =>
+                setShowProjectList(!showProjectList)
+              }
+              title="클릭하여 프로젝트 선택"
+            >
+              {projectName || "프로젝트 선택"}
+              <span className="project-arrow">
+                {showProjectList ? "▲" : "▼"}
+              </span>
             </div>
-          )}
 
-          <div className="project-root">
-            {root || "프로젝트 경로 없음"}
+            {showProjectList && (
+              <div className="project-list">
+                {projects.length === 0 && (
+                  <div className="project-list-empty">
+                    프로젝트 없음
+                  </div>
+                )}
+                {projects.map(p => (
+                  <div
+                    key={p.id}
+                    className={
+                      p.worktree === root
+                        ? "project-list-item active"
+                        : "project-list-item"
+                    }
+                    onClick={async () => {
+                      setShowProjectList(false)
+                      try {
+                        const resp = await fetch(
+                          "/api/open-project",
+                          {
+                            method: "POST",
+                            headers: {
+                              "Content-Type":
+                                "application/json",
+                            },
+                            body: JSON.stringify(
+                              { path: p.worktree },
+                            ),
+                          },
+                        )
+                        if (resp.ok) {
+                          setRoot(p.worktree)
+                          await loadTree(
+                            p.worktree,
+                          )
+                          await loadProjects()
+                        }
+                      } catch (err) {
+                        console.error(
+                          "switch project failed",
+                          err,
+                        )
+                      }
+                    }}
+                  >
+                    <span
+                      className="project-list-color"
+                      style={{
+                        backgroundColor:
+                          p.iconColor ||
+                          "#666",
+                      }}
+                    />
+                    <span className="project-list-name">
+                      {p.name ||
+                        p.worktree.split(
+                          /[\\/]/,
+                        ).pop()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="project-root">
+              {root || "프로젝트 경로 없음"}
+            </div>
           </div>
         </div>
-        {render(tree)}
+        <div className="sidebar-scrollable-tree">
+          {render(tree)}
+        </div>
       </div>
 
-      <div className="main" onClick={() => window.innerWidth <= 900 && sidebarVisible && setSidebarVisible(false)}>
+      <div className="main" onClick={() => window.innerWidth <= 768 && sidebarVisible && setSidebarVisible(false)}>
         <div className="titlebar">
           <div className="title">
             {title || "Select File"}
