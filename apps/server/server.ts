@@ -4,7 +4,7 @@ import fs from "fs"
 import os from "os"
 import path from "path"
 import { fileURLToPath } from "url"
-import { extractCppSymbols } from "./symbolExtractor.js"
+import { extractSymbols } from "./symbolExtractor.js"
 import { WebSocketServer } from 'ws';
 import { deflateRawSync } from "zlib"
 import { execSync } from "child_process"
@@ -712,62 +712,96 @@ app.get(
         )
 
       if (ext === ".md") {
+        const activeHighlighter = await ensureHighlighter();
+        
+        // 1. Markdown 렌더링 결과 (Render 모드용)
+        const rendered = md.render(raw);
+
+        // 2. Shiki 하이라이팅된 Raw 코드 (Text 모드용)
+        let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
+        if (activeHighlighter) {
+            highlightedRaw = activeHighlighter.codeToHtml(raw, {
+                lang: 'markdown',
+                theme: 'github-dark',
+                lineNumbers: true
+            });
+        }
+        
+        const symbols = extractSymbols(raw, 'markdown');
 
         return res.json({
-
-          type:
-            "markdown",
-
+          type: "markdown",
           raw,
-
-          rendered:
-            md.render(raw),
+          rendered,
+          highlightedRaw,
+          symbols
         })
       }
 
       // @ts-ignore
       if (ext === ".html") {
+        const activeHighlighter = await ensureHighlighter();
+        
+        // 1. 원본 HTML 그대로 (Render 모드용)
+        const rendered = raw;
+
+        // 2. Shiki 하이라이팅된 Raw 코드 (Text 모드용)
+        let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
+        if (activeHighlighter) {
+            highlightedRaw = activeHighlighter.codeToHtml(raw, {
+                lang: 'html',
+                theme: 'github-dark',
+                lineNumbers: true
+            });
+        }
 
         return res.json({
           type: "html",
           raw,
-          rendered: raw,
-          url:
-            `/api/raw?path=${encodeURIComponent(req.query.path as string)}`,
+          rendered,
+          highlightedRaw,
+          url: `/api/raw?path=${encodeURIComponent(req.query.path as string)}`,
         })
       }
 
       if (ext === ".puml") {
-
+        const activeHighlighter = await ensureHighlighter();
+        let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
+        if (activeHighlighter) {
+            highlightedRaw = activeHighlighter.codeToHtml(raw, {
+                lang: 'plaintext',
+                theme: 'github-dark',
+                lineNumbers: true
+            });
+        }
         return res.json({
-          type:
-            "plantuml",
-
+          type: "plantuml",
           raw,
-
-          rendered:
-            "",
-
-          url:
-            `${PLANTUML_SERVER_URL}/svg/${encodePlantUml(raw)}`,
+          rendered: "",
+          highlightedRaw,
+          url: `${PLANTUML_SERVER_URL}/svg/${encodePlantUml(raw)}`,
         })
       }
 
       if (ext === ".mmd") {
-
+        const activeHighlighter = await ensureHighlighter();
+        let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
+        if (activeHighlighter) {
+            highlightedRaw = activeHighlighter.codeToHtml(raw, {
+                lang: 'plaintext',
+                theme: 'github-dark',
+                lineNumbers: true
+            });
+        }
         return res.json({
-
-          type:
-            "mermaid",
-
+          type: "mermaid",
           raw,
-
-          rendered:
-            `
+          rendered: `
 <pre class="language-mermaid">
 ${escapeHtml(raw)}
 </pre>
 `,
+          highlightedRaw,
         })
       }
 
@@ -902,8 +936,8 @@ ${escapeHtml(raw)}
               )
           
           let symbols = []
-          if (lang === 'cpp') {
-            symbols = extractCppSymbols(raw)
+          if (lang) {
+            symbols = extractSymbols(raw, lang)
           }
 
           return res.json({

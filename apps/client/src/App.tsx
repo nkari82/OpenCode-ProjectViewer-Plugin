@@ -304,7 +304,7 @@ function CodeBlock({ rendered, symbols, onFileOpen, currentPath }: CodeBlockProp
             }}
             defaultValue=""
           >
-            <option value="" disabled>함수 선택</option>
+            <option value="" disabled>네비게이션</option>
             {symbols.map(s => (
               <option key={s.name + s.line} value={s.line}>
                 {s.name}
@@ -877,9 +877,9 @@ export default function App() {
   }, [fileData.type, title])
 
     function renderPreview() {
-    const cat = getFileCategory(title)
-    
-    // 1. 렌더링 가능한 타입 (Render 모드 전용)
+    const cat = getFileCategory(title);
+
+    // 1. Render 모드 + 렌더러블 (전문 뷰어 및 마크다운 렌더링)
     if (viewMode === "render" && cat === "renderable") {
         if (fileData.type === "pdf") {
             return <iframe src={fileData.url} className="viewer-frame" title={title} />
@@ -900,13 +900,16 @@ export default function App() {
         return <iframe src={fileData.url} className="viewer-frame" title={title} />
     }
 
-    // 3. 코드/텍스트 (Render vs Text)
-    // Render 모드이거나, Text 모드라도 Shiki로 하이라이팅 가능한 경우 (code 타입)
-    if (viewMode === "render" && fileData.type === "code") {
-      return <CodeBlock rendered={fileData.rendered} symbols={fileData.symbols} onFileOpen={openFile} currentPath={currentPath} />
+    // 3. 코드 또는 텍스트 모드 + 렌더러블/코드 (Shiki 지원 시)
+    // Render 모드이거나, Text 모드라도 하이라이팅된 Raw 소스가 있는 경우 (code/renderable)
+    if (fileData.type === "code" || (cat === "renderable" && fileData.highlightedRaw)) {
+        const contentToRender = (viewMode === "text" && fileData.highlightedRaw) 
+            ? fileData.highlightedRaw 
+            : fileData.rendered;
+        return <CodeBlock rendered={contentToRender} symbols={fileData.symbols} onFileOpen={openFile} currentPath={currentPath} />
     }
     
-    // 기본 텍스트 렌더링 (Text 모드이거나 Shiki 미지원 렌더러블 타입)
+    // 4. 기본 텍스트 렌더링
     return <CodeBlock rendered={`<pre><code>${escapeHtml(fileData.raw)}</code></pre>`} />
   }
 

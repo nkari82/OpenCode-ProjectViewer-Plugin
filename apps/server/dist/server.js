@@ -4,7 +4,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { extractCppSymbols } from "./symbolExtractor.js";
+import { extractSymbols } from "./symbolExtractor.js";
 import { WebSocketServer } from 'ws';
 import { deflateRawSync } from "zlib";
 import { execSync } from "child_process";
@@ -403,18 +403,40 @@ app.get("/api/file", async (req, res) => {
         }
         const raw = fs.readFileSync(file, "utf8");
         if (ext === ".md") {
+            const activeHighlighter = await ensureHighlighter();
+            let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
+            if (activeHighlighter) {
+                highlightedRaw = activeHighlighter.codeToHtml(raw, {
+                    lang: 'markdown',
+                    theme: 'github-dark',
+                    lineNumbers: true
+                });
+            }
+            const symbols = extractSymbols(raw, 'markdown');
             return res.json({
                 type: "markdown",
                 raw,
                 rendered: md.render(raw),
+                highlightedRaw,
+                symbols
             });
         }
         // @ts-ignore
         if (ext === ".html") {
+            const activeHighlighter = await ensureHighlighter();
+            let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
+            if (activeHighlighter) {
+                highlightedRaw = activeHighlighter.codeToHtml(raw, {
+                    lang: 'html',
+                    theme: 'github-dark',
+                    lineNumbers: true
+                });
+            }
             return res.json({
                 type: "html",
                 raw,
                 rendered: raw,
+                highlightedRaw,
                 url: `/api/raw?path=${encodeURIComponent(req.query.path)}`,
             });
         }
@@ -496,8 +518,8 @@ ${escapeHtml(raw)}
                     lineNumbers: true,
                 });
                 let symbols = [];
-                if (lang === 'cpp') {
-                    symbols = extractCppSymbols(raw);
+                if (lang) {
+                    symbols = extractSymbols(raw, lang);
                 }
                 return res.json({
                     type: "code",

@@ -1,19 +1,33 @@
-export function extractCppSymbols(code) {
+export function extractSymbols(code, lang) {
     const symbols = [];
-    // Very simple regex for C++ function definitions:
-    // Matches "functionName(" at start of a line or after a return type
-    // This is a naive implementation and might need refinement.
-    const regex = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\((?:[^)(]|\([^)(]*\))*\)\s*\{/g;
+    // 언어별 함수/클래스 패턴 정의
+    const patterns = {
+        cpp: /\b([A-Za-z_][A-Za-z0-9_]*)\s*\((?:[^)(]|\([^)(]*\))*\)\s*\{/g,
+        typescript: /(?:function|class|interface|type)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+        javascript: /(?:function|class)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+        python: /(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+        rust: /(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+        go: /(?:func|type|struct)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+        java: /(?:class|interface|void|int|String|boolean)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g,
+        csharp: /(?:class|void|int|string|bool)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g,
+        markdown: /^(#{1,6})\s+(.*)/gm,
+    };
+    const regex = patterns[lang];
+    if (!regex)
+        return [];
     let match;
-    const lines = code.split('\n');
     while ((match = regex.exec(code)) !== null) {
-        const functionName = match[1];
-        // Calculate line number
+        const name = match[1];
         const line = code.substring(0, match.index).split('\n').length;
-        // Simple filter to skip common keywords
-        const keywords = ['if', 'for', 'while', 'switch', 'return', 'catch'];
-        if (!keywords.includes(functionName)) {
-            symbols.push({ name: functionName, line });
+        // 키워드 필터링
+        const keywords = ['if', 'for', 'while', 'switch', 'return', 'catch', 'function', 'class', 'interface', 'type', 'def', 'fn', 'struct', 'enum', 'func', 'void', 'int', 'String', 'bool', 'string'];
+        // Markdown은 정규식 그룹이 다름 (#과 제목)
+        if (lang === 'markdown') {
+            symbols.push({ name: match[2].trim(), line });
+            continue;
+        }
+        if (!keywords.includes(name)) {
+            symbols.push({ name, line });
         }
     }
     return symbols;
