@@ -799,7 +799,7 @@ export default function App() {
                   return
                 }
 
-                setSidebarVisible(false)
+                // setSidebarVisible(false) // 파일 선택 시 자동 닫기 제거
                 openFile(
                   node.path,
                   node.name,
@@ -938,7 +938,7 @@ export default function App() {
     )
   }
 
-  const [sidebarVisible, setSidebarVisible] = useState(false);
+  const [sidebarVisible, setSidebarVisible] = useState(window.innerWidth > 900);
 
   return (
     <div className="app-container">
@@ -1047,7 +1047,7 @@ export default function App() {
         {render(tree)}
       </div>
 
-      <div className="main" onClick={() => sidebarVisible && setSidebarVisible(false)}>
+      <div className="main" onClick={() => window.innerWidth <= 900 && sidebarVisible && setSidebarVisible(false)}>
         <div className="titlebar">
           <div className="title">
             {title || "Select File"}
