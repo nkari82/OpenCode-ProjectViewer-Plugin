@@ -3,6 +3,7 @@ import cors from "cors"
 import fs from "fs"
 import os from "os"
 import path from "path"
+import { fileURLToPath } from "url"
 import { extractCppSymbols } from "./symbolExtractor.js"
 import { WebSocketServer } from 'ws';
 import { deflateRawSync } from "zlib"

@@ -4,6 +4,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
+import { extractCppSymbols } from "./symbolExtractor.js";
 import { WebSocketServer } from 'ws';
 import { deflateRawSync } from "zlib";
 import { execSync } from "child_process";
@@ -490,10 +491,15 @@ ${escapeHtml(raw)}
                     theme: "monokai",
                     lineNumbers: true,
                 });
+                let symbols = [];
+                if (lang === 'cpp') {
+                    symbols = extractCppSymbols(raw);
+                }
                 return res.json({
                     type: "code",
                     raw,
                     rendered,
+                    symbols
                 });
             }
             return res.json({

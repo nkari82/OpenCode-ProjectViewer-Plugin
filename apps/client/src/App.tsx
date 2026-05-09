@@ -287,16 +287,24 @@ function CodeBlock({ rendered, symbols }: CodeBlockProps) {
   const sanitizedHtml = useMemo(() => DOMPurify.sanitize(rendered), [rendered]);
 
   const scrollToLine = (line: number) => {
-    // Shiki adds 'line' class to lines if configured, but here we have lineNumbers: true
-    // This is hard to jump to without specific IDs.
-    // Let's assume shiki adds line numbers in a specific structure or we find the line based on text content.
     const container = document.querySelector('.code-block-content');
     if (!container) return;
     
-    // Simplest approach: Find the line number span
+    // shiki/monokai 등 테마에 따라 행 번호가 포함된 스팬 구조를 타겟팅합니다.
+    // 보통 line 클래스를 가진 요소들이 줄 단위로 존재합니다.
     const lineSpans = container.querySelectorAll('.line');
-    if (lineSpans[line - 1]) {
-        lineSpans[line - 1].scrollIntoView({ behavior: 'smooth' });
+    
+    // 1-based index를 0-based index로 변환
+    const targetLine = lineSpans[line - 1];
+    
+    if (targetLine) {
+        targetLine.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        
+        // 시각적 피드백: 잠시 하이라이트 효과
+        targetLine.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+        setTimeout(() => {
+            targetLine.style.backgroundColor = 'transparent';
+        }, 1000);
     }
   };
 
@@ -304,14 +312,23 @@ function CodeBlock({ rendered, symbols }: CodeBlockProps) {
     <div className="code-block">
       {symbols && symbols.length > 0 && (
         <div className="function-bar">
-          {symbols.map(s => (
-            <button key={s.name + s.line} onClick={() => scrollToLine(s.line)}>
-              {s.name}
-            </button>
-          ))}
+          <select 
+            onChange={(e) => {
+              const line = parseInt(e.target.value);
+              if (!isNaN(line)) scrollToLine(line);
+            }}
+            defaultValue=""
+          >
+            <option value="" disabled>함수 선택</option>
+            {symbols.map(s => (
+              <option key={s.name + s.line} value={s.line}>
+                {s.name}
+              </option>
+            ))}
+          </select>
         </div>
       )}
-      <div className="code-block-content">
+      <div className="code-block-content" style={{ maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
         <div
           className="preview-html"
           dangerouslySetInnerHTML={{
@@ -782,6 +799,7 @@ export default function App() {
                   return
                 }
 
+                setSidebarVisible(false)
                 openFile(
                   node.path,
                   node.name,
@@ -920,15 +938,29 @@ export default function App() {
     )
   }
 
+  const [sidebarVisible, setSidebarVisible] = useState(false);
+
   return (
-    <div className="layout">
+    <div className="app-container">
+      {/* 화면 좌측 끝 감지 영역 및 토글 버튼 */}
+      <div className="sidebar-trigger-area" />
+      <button 
+        className={`sidebar-toggle-btn ${sidebarVisible ? 'hidden' : ''}`}
+        onClick={() => setSidebarVisible(true)}
+      >
+        ▶
+      </button>
 
-      <div className="sidebar">
-
+      <div className={`sidebar ${sidebarVisible ? 'visible' : 'hidden'}`}>
+        <button 
+          className="sidebar-close-btn"
+          onClick={() => setSidebarVisible(false)}
+        >
+          &times;
+        </button>
         <div className="sidebar-title">
           OpenCode Viewer
         </div>
-
         <div className="project-header">
           <div
             className="project-name project-name-clickable"
@@ -1012,67 +1044,35 @@ export default function App() {
             {root || "프로젝트 경로 없음"}
           </div>
         </div>
-
         {render(tree)}
-
       </div>
 
-      <div className="main">
-
+      <div className="main" onClick={() => sidebarVisible && setSidebarVisible(false)}>
         <div className="titlebar">
-
           <div className="title">
-            {title ||
-              "Select File"}
+            {title || "Select File"}
           </div>
-
           {renderToggle && (
-
             <div className="toolbar">
-
               <button
-                className={
-                  viewMode ===
-                  "render"
-                    ? "toolbar-btn active"
-                    : "toolbar-btn"
-                }
-                onClick={() =>
-                  setViewMode(
-                    "render",
-                  )
-                }
+                className={viewMode === "render" ? "toolbar-btn active" : "toolbar-btn"}
+                onClick={() => setViewMode("render")}
               >
                 Render
               </button>
-
               <button
-                className={
-                  viewMode ===
-                  "text"
-                    ? "toolbar-btn active"
-                    : "toolbar-btn"
-                }
-                onClick={() =>
-                  setViewMode(
-                    "text",
-                  )
-                }
+                className={viewMode === "text" ? "toolbar-btn active" : "toolbar-btn"}
+                onClick={() => setViewMode("text")}
               >
                 Text
               </button>
-
             </div>
           )}
-
         </div>
-
         <div className="preview">
           {renderPreview()}
         </div>
-
       </div>
-
     </div>
   )
 }
