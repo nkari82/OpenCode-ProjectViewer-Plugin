@@ -17,9 +17,10 @@ body,
 /* 모바일 환경 대응 최적화 */
 @media (max-width: 900px) {
   .app-container {
-    flex-direction: column;
+    flex-direction: row; /* 컬럼(위아래)에서 로우(좌우)로 변경 */
     height: 100vh;
     overflow: hidden;
+    position: relative;
   }
 
   .sidebar {
@@ -27,7 +28,7 @@ body,
     top: 0;
     left: 0;
     bottom: 0;
-    z-index: 2000;
+    z-index: 9999;
     width: 300px;
     height: 100%;
     transform: translateX(-100%);
