@@ -1,0 +1,20 @@
+{
+  "name": "viewer-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmitOnError false",
+    "dev": "tsx watch server.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "highlight.js": "^11.11.1",
+    "markdown-it": "^14.1.0",
+    "shiki": "^1.29.2",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}

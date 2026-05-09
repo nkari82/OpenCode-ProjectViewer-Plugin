@@ -1,0 +1,757 @@
+@import url('https://fonts.googleapis.com/css2?family=Cascadia+Code:wght@400;500;600&display=swap');
+
+html,
+body,
+#root {
+  margin: 0;
+
+  width: 100%;
+  height: 100%;
+
+  overflow: hidden;
+
+  background: #0d1117;
+
+  color: #e6edf3;
+
+  font-family:
+    "Cascadia Code",
+    monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.layout {
+  display: flex;
+
+  width: 100%;
+  height: 100%;
+}
+
+/* 좌측 파일트리 */
+
+.sidebar {
+
+  width: 340px;
+  min-width: 260px;
+
+  overflow: auto;
+
+  background: #11161d;
+
+  border-right:
+    1px solid #30363d;
+
+  padding: 12px;
+}
+
+.sidebar-title {
+
+  font-size: 18px;
+
+  font-weight: 700;
+
+  margin-bottom: 12px;
+}
+
+.project-header {
+
+  margin-bottom: 12px;
+
+  padding: 10px 12px;
+
+  border:
+    1px solid #30363d;
+
+  border-radius: 10px;
+
+  background: #0d1117;
+}
+
+.project-name {
+
+  font-size: 14px;
+
+  font-weight: 700;
+
+  color: #f0f6fc;
+}
+
+.project-root {
+
+  margin-top: 6px;
+
+  font-size: 12px;
+
+  line-height: 1.5;
+
+  color: #8b949e;
+
+  word-break: break-all;
+}
+
+.project-name-clickable {
+
+  display: flex;
+
+  justify-content: space-between;
+
+  align-items: center;
+
+  cursor: pointer;
+
+  padding: 2px 0;
+}
+
+.project-name-clickable:hover {
+
+  color: #58a6ff;
+}
+
+.project-arrow {
+
+  font-size: 10px;
+
+  margin-left: 8px;
+}
+
+.project-list {
+
+  margin-top: 8px;
+
+  border: 1px solid #30363d;
+
+  border-radius: 8px;
+
+  background: #0d1117;
+
+  max-height: 300px;
+
+  overflow-y: auto;
+}
+
+.project-list-empty {
+
+  padding: 12px;
+
+  text-align: center;
+
+  color: #8b949e;
+
+  font-size: 13px;
+}
+
+.project-list-item {
+
+  display: flex;
+
+  align-items: center;
+
+  padding: 8px 12px;
+
+  cursor: pointer;
+
+  border-bottom: 1px solid #21262d;
+
+  font-size: 13px;
+}
+
+.project-list-item:last-child {
+
+  border-bottom: none;
+}
+
+.project-list-item:hover {
+
+  background: #161b22;
+}
+
+.project-list-item.active {
+
+  background: #1f6feb;
+
+  color: #fff;
+}
+
+.project-list-color {
+
+  width: 10px;
+
+  height: 10px;
+
+  border-radius: 50%;
+
+  margin-right: 8px;
+
+  flex-shrink: 0;
+}
+
+.project-list-name {
+
+  flex: 1;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+}
+
+/* 메인 */
+
+.main {
+
+  flex: 1;
+
+  display: flex;
+
+  flex-direction: column;
+
+  min-width: 0;
+}
+
+.titlebar {
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: space-between;
+
+  padding: 10px 16px;
+
+  background: #161b22;
+
+  border-bottom:
+    1px solid #30363d;
+}
+
+.title {
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+
+  font-size: 15px;
+
+  font-weight: 600;
+}
+
+.toolbar {
+
+  display: flex;
+
+  gap: 8px;
+}
+
+.toolbar-btn {
+
+  background: #1f2937;
+
+  color: #e6edf3;
+
+  border: none;
+
+  padding: 6px 12px;
+
+  border-radius: 8px;
+
+  cursor: pointer;
+
+  font-family:
+    inherit;
+}
+
+.toolbar-btn:hover {
+
+  background: #374151;
+}
+
+.toolbar-btn.active {
+
+  background: #2563eb;
+}
+
+.preview {
+
+  flex: 1;
+
+  overflow: auto;
+
+  padding: 32px;
+
+  line-height: 1.8;
+
+  font-size: 15px;
+
+  letter-spacing: 0.2px;
+}
+
+.viewer-frame,
+.pdf-frame {
+
+  width: 100%;
+
+  height: 100%;
+
+  min-height: 70vh;
+
+  border:
+    1px solid #30363d;
+
+  border-radius: 12px;
+
+  background: #0d1117;
+}
+
+.diagram-viewer-frame {
+
+  background: #ffffff;
+}
+
+.preview-html {
+
+  width: 100%;
+}
+
+.image-preview {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+.code-block {
+  position: relative;
+  margin-bottom: 8px;
+  background: #0d1117;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+}
+
+.function-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+
+.function-bar button {
+  background: #1f2937;
+  color: #58a6ff;
+  border: 1px solid #30363d;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.function-bar button:hover {
+  background: #2563eb;
+  color: #fff;
+}
+
+.code-block-content {
+  overflow: hidden;
+}
+
+.line-number {
+  display: inline-block;
+  width: 3em;
+  text-align: right;
+  margin-right: 1em;
+  color: #8b949e;
+  user-select: none;
+  font-size: 0.9em;
+}
+
+.diagram-frame {
+
+  width: 100%;
+
+  min-height: 70vh;
+
+  display: flex;
+
+  align-items: flex-start;
+
+  justify-content: center;
+
+  padding: 24px;
+
+  border:
+    1px solid #30363d;
+
+  border-radius: 12px;
+
+  background: #ffffff;
+
+  overflow: auto;
+}
+
+.diagram-frame svg {
+
+  max-width: 100%;
+
+  height: auto;
+}
+
+/* 파일 노드 */
+
+.row {
+
+  display: flex;
+
+  align-items: center;
+}
+
+.node {
+
+  flex: 1;
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 6px;
+
+  min-width: 0;
+
+  padding: 6px 10px;
+
+  border-radius: 8px;
+
+  cursor: pointer;
+
+  user-select: none;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+}
+
+.dir-node {
+
+  font-weight: 600;
+}
+
+.tree-chevron {
+
+  width: 14px;
+
+  flex-shrink: 0;
+
+  color: #8b949e;
+
+  text-align: center;
+}
+
+.tree-icon {
+
+  flex-shrink: 0;
+}
+
+.tree-label {
+
+  min-width: 0;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+}
+
+.node:hover {
+
+  background: #1f2937;
+}
+
+.node.disabled {
+
+  cursor: not-allowed;
+
+  opacity: 0.45;
+}
+
+.node.disabled:hover {
+
+  background: transparent;
+}
+
+.children {
+
+  padding-left: 16px;
+}
+
+.delete {
+
+  background: transparent;
+
+  color: #ff6b6b;
+
+  border: none;
+
+  cursor: pointer;
+
+  padding: 4px 8px;
+
+  border-radius: 6px;
+}
+
+.delete:hover {
+
+  background: #2d1b1b;
+}
+
+/* 코드뷰 */
+
+pre {
+
+  margin: 0;
+
+  padding: 24px;
+
+  border-radius: 16px;
+
+  overflow: auto;
+
+  border:
+    1px solid #30363d;
+
+  background: #0d1117;
+}
+
+code {
+
+  font-family:
+    "Cascadia Code",
+    monospace !important;
+
+  font-size: 14px;
+
+  line-height: 1.8;
+}
+
+.shiki {
+
+  border-radius: 16px;
+
+  overflow: auto;
+
+  border:
+    1px solid #30363d !important;
+}
+
+/* markdown */
+
+.preview h1,
+.preview h2,
+.preview h3 {
+
+  border-bottom:
+    1px solid #30363d;
+
+  padding-bottom: 6px;
+}
+
+.preview img {
+
+  max-width: 100%;
+}
+
+.preview table {
+
+  border-collapse: collapse;
+}
+
+.preview td,
+.preview th {
+
+  border:
+    1px solid #30363d;
+
+  padding: 8px;
+}
+
+.preview blockquote {
+
+  border-left:
+    4px solid #374151;
+
+  margin-left: 0;
+
+  padding-left: 16px;
+
+  color: #9ca3af;
+}
+
+.preview a {
+
+  color: #60a5fa;
+}
+
+/* Mermaid */
+
+svg {
+
+  max-width: 100%;
+}
+
+/* PlantUML Viewer */
+
+.plantuml-viewer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 70vh;
+}
+
+.plantuml-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px 10px 0 0;
+  user-select: none;
+}
+
+.plantuml-controls button {
+  background: #1f2937;
+  color: #e6edf3;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.plantuml-controls button:hover {
+  background: #374151;
+}
+
+.plantuml-scale {
+  font-size: 13px;
+  color: #8b949e;
+  min-width: 48px;
+  text-align: center;
+}
+
+.plantuml-canvas {
+  flex: 1;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #30363d;
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.plantuml-svg-wrapper {
+  transition: none;
+  will-change: transform;
+}
+
+.plantuml-svg-wrapper svg {
+  max-width: none;
+  display: block;
+}
+
+.plantuml-loading {
+  color: #8b949e;
+  font-size: 14px;
+}
+
+/* Scrollbar */
+
+::-webkit-scrollbar {
+
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+
+  background: #374151;
+
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-track {
+
+  background: #11161d;
+}
+
+/* 모바일 */
+@media (max-width: 900px) {
+
+  .layout {
+
+    flex-direction: column;
+  }
+
+  .sidebar {
+
+    width: 100%;
+    min-width: 100%;
+    height: 260px;
+    border-right: none;
+    border-bottom:
+      1px solid #30363d;
+  }
+
+  .preview {
+
+    padding: 16px;
+    font-size: 14px;
+  }
+
+  pre {
+
+    padding: 14px;
+  }
+
+  .titlebar {
+
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .viewer-frame,
+  .diagram-viewer-frame,
+  .image-preview {
+    min-height: 50vh;
+  }
+
+  .project-list {
+    position: fixed;
+    top: 260px;
+    left: 0;
+    right: 0;
+    z-index: 100;
+  }
+
+  .code-block-header {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+}
