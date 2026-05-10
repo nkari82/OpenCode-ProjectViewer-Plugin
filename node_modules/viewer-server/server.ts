@@ -359,6 +359,14 @@ const md =
     },
   })
 
+// 헤더 오픈 규칙 수정하여 ID 삽입
+md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
+  const token = tokens[idx];
+  const content = tokens[idx + 1].content;
+  const slug = content.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return `<h${token.level} id="${slug}">`;
+};
+
 let highlighter = null
 
 async function ensureHighlighter() {

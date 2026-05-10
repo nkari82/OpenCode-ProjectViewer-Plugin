@@ -191,6 +191,13 @@ const md = new MarkdownIt({
             .value;
     },
 });
+// 헤더 오픈 규칙 수정하여 ID 삽입
+md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    const content = tokens[idx + 1].content;
+    const slug = content.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    return `<h${token.level} id="${slug}">`;
+};
 let highlighter = null;
 async function ensureHighlighter() {
     if (highlighter) {
@@ -404,6 +411,9 @@ app.get("/api/file", async (req, res) => {
         const raw = fs.readFileSync(file, "utf8");
         if (ext === ".md") {
             const activeHighlighter = await ensureHighlighter();
+            // 1. Markdown 렌더링 결과 (Render 모드용)
+            const rendered = md.render(raw);
+            // 2. Shiki 하이라이팅된 Raw 코드 (Text 모드용)
             let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
             if (activeHighlighter) {
                 highlightedRaw = activeHighlighter.codeToHtml(raw, {
@@ -416,7 +426,7 @@ app.get("/api/file", async (req, res) => {
             return res.json({
                 type: "markdown",
                 raw,
-                rendered: md.render(raw),
+                rendered,
                 highlightedRaw,
                 symbols
             });
@@ -424,6 +434,9 @@ app.get("/api/file", async (req, res) => {
         // @ts-ignore
         if (ext === ".html") {
             const activeHighlighter = await ensureHighlighter();
+            // 1. 원본 HTML 그대로 (Render 모드용)
+            const rendered = raw;
+            // 2. Shiki 하이라이팅된 Raw 코드 (Text 모드용)
             let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
             if (activeHighlighter) {
                 highlightedRaw = activeHighlighter.codeToHtml(raw, {
@@ -435,20 +448,39 @@ app.get("/api/file", async (req, res) => {
             return res.json({
                 type: "html",
                 raw,
-                rendered: raw,
+                rendered,
                 highlightedRaw,
                 url: `/api/raw?path=${encodeURIComponent(req.query.path)}`,
             });
         }
         if (ext === ".puml") {
+            const activeHighlighter = await ensureHighlighter();
+            let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
+            if (activeHighlighter) {
+                highlightedRaw = activeHighlighter.codeToHtml(raw, {
+                    lang: 'plaintext',
+                    theme: 'github-dark',
+                    lineNumbers: true
+                });
+            }
             return res.json({
                 type: "plantuml",
                 raw,
                 rendered: "",
+                highlightedRaw,
                 url: `${PLANTUML_SERVER_URL}/svg/${encodePlantUml(raw)}`,
             });
         }
         if (ext === ".mmd") {
+            const activeHighlighter = await ensureHighlighter();
+            let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
+            if (activeHighlighter) {
+                highlightedRaw = activeHighlighter.codeToHtml(raw, {
+                    lang: 'plaintext',
+                    theme: 'github-dark',
+                    lineNumbers: true
+                });
+            }
             return res.json({
                 type: "mermaid",
                 raw,
@@ -457,6 +489,7 @@ app.get("/api/file", async (req, res) => {
 ${escapeHtml(raw)}
 </pre>
 `,
+                highlightedRaw,
             });
         }
         const IMAGE_EXTENSIONS = [

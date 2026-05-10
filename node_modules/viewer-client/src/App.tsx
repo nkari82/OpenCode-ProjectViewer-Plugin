@@ -6,9 +6,9 @@ import {
   useState,
 } from "react"
 
-import mermaid from "mermaid"
 // @ts-ignore
 import DOMPurify from "dompurify"
+import mermaid from "mermaid"
 
 import "./styles.css"
 

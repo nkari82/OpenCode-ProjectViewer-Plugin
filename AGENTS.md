@@ -3,93 +3,48 @@
 ## What This Is
 
 OpenCode에서 프로젝트를 선택하면 웹 파일뷰어에 파일 트리가 표시되고, 파일 클릭 시 내용을 미리보는 플러그인.
-
 - React SPA + Express API 기반
-- 코드 하이라이팅(Shiki), Markdown 렌더링, Mermaid 렌더링, PDF/HTML 미리보기 지원
+- 기술 스택: Express(서버), React+Vite(프론트), Shiki(코드 하이라이팅), markdown-it(마크다운), Mermaid(다이어그램)
 
 ## Architecture
 
-- **plugin.ts**: OpenCode plugin entry
-  - Viewer 서버(`server/server.js`) child process 실행
-  - 포트 4310–4399 스캔
-  - 프로젝트 루트 동기화(`/api/open-project`) 및 refresh 신호 전달(`/api/refresh`)
-  - `session.created` / `session.updated` / generic `event` 경로 모두 처리
-- **server/**: 독립 패키지(별도 `package.json`)
-  - `server.js`: Express API + 정적 서빙(`dist/`)
-  - `src/`: React SPA (`main.jsx`, `App.jsx`, `styles.css`)
-  - `dist/`: 프로덕션 빌드 산출물
-  - `vite.config.js`: 프론트엔드 개발 서버(5173)
+- **plugin.ts**: OpenCode 플러그인 엔트리 (프로젝트 루트에서 실행)
+  - `apps/server/server.ts` child process 관리 (포트 4310 고정, EADDRINUSE 시 자동 종료)
+  - `session.created` / `session.updated` / `file.watcher.updated` 이벤트 처리
+- **apps/server/**: 독립 패키지 (`viewer-server`)
+  - Express API 서버, 정적 파일(`apps/client/dist`) 서빙
+  - 프로젝트 파일 접근은 `safeResolve()` (ROOT 하위만 허용, Path Traversal 방지)
+- **apps/client/**: 독립 패키지 (`viewer-client`, React)
+  - 웹뷰가 1초 주기로 `/api/root` + `/api/refresh` 폴링
 
-## Commands
+## Development Commands
 
 ```bash
-# install
-cd server && npm install
+# 루트 패키지 설치
+pnpm install
 
-# frontend dev (Vite only)
-cd server && npm run dev
-
-# production build
-cd server && npm run build
+# 개발 서버 실행
+pnpm dev # (루트에서)
 ```
-
-테스트/린트/CI 설정은 없음. 루트에 `tsconfig.json`도 없음.
 
 ## Runtime Contracts
 
-### Plugin ↔ Viewer
-- Viewer server health: `GET /api/ping`
-- 프로젝트 루트 조회: `GET /api/root`
-- 프로젝트 루트 변경: `POST /api/open-project` with `{ path }`
-- 트리 조회: `GET /api/tree`
-- 파일 읽기/삭제: `GET /api/file`, `DELETE /api/file?path=...`
-- 변경 감지 신호: `POST /api/refresh` (timestamp 갱신), `GET /api/refresh` (현재 timestamp 조회)
-- Raw 파일 스트리밍: `GET /api/raw?path=...` (PDF iframe source 등)
-
-### Webview Sync Model
-- 웹뷰는 1초 주기로 `/api/root` + `/api/refresh`를 함께 폴링
-- 루트 변경 또는 refresh timestamp 변경 시 트리 재로드
-- 루트 변경 시 파일 선택 상태/뷰 모드/열린 폴더 상태 초기화
-
-## File Rendering Behavior
-
-| Type | Extension | Rendering |
+| Endpoint | Method | Purpose |
 |---|---|---|
-| Code | `.cs`, `.c`, `.cpp`, `.py`, `.js`, `.ts`, `.tsx`, ... | Shiki (`github-dark`) |
-| Markdown | `.md`, `.markdown` | markdown-it + highlight.js |
-| Diagram | `.puml`, `.mmd` | Mermaid (client-side) |
-| HTML | `.html` | Render/Text toggle 지원 |
-| PDF | `.pdf` | iframe via `/api/raw` |
-| Plain text | unknown/other text | `<pre>` |
+| `/api/ping` | GET | 서버 상태 확인 |
+| `/api/root` | GET | 프로젝트 루트 경로 조회 |
+| `/api/open-project` | POST | 프로젝트 루트 변경 (`{ path }`) |
+| `/api/tree` | GET | 프로젝트 파일 트리 조회 |
+| `/api/file` | GET | 파일 내용 읽기 |
+| `/api/refresh` | POST/GET | 트리 변경 신호 전송/조회 (`refreshAt` 활용) |
+| `/api/raw` | GET | 원본 파일 스트리밍 (PDF/이미지 등) |
 
-추가 UI 규칙:
-- 폴더는 기본 접힘(default-collapsed), 클릭으로 펼침/접힘
-- 미리보기 불가 파일은 트리에서 disabled 처리(선택 불가)
+## Key Gotchas
 
-## Tree & Security Rules
-
-- 트리 제외 디렉터리:
-  - `.git`, `node_modules`, `dist`, `.next`, `.turbo`, `.cache`, `.pytest_cache`
-- 파일 시스템 접근은 `safeResolve()`로 ROOT 하위만 허용(path traversal 방지)
-- `walk()`는 `EPERM`/`EACCES`/`ENOENT`를 건너뛰어 트리 생성 중단을 방지
-
-## Lifecycle & Shutdown
-
-- `plugin.ts`는 로깅을 **console-only**로 수행 (파일 로그 생성 안 함)
-- 플러그인 이벤트 처리/루트 동기화는 비차단(fire-and-forget + in-flight coalescing)
-- Windows 종료: `taskkill /pid /f /t` (종료 경로에서 sync/async 모두 사용)
-- Unix 종료: `SIGTERM`
-- `server.js`는 `PARENT_PID` 감시(`process.kill(pid, 0)`)로 부모 종료 시 self-shutdown
-- `SIGINT`/`SIGTERM`/`SIGBREAK`/`uncaughtException`/`unhandledRejection` 경로에서 안전 종료 처리
-
-## Port & URLs
-
-- Plugin viewer port range: **4310–4399**
-- Default viewer URL: `http://localhost:4310`
-- Vite dev URL: `http://localhost:5173` (API 없음)
-
-## Global Install Gotcha
-
-이 프로젝트를 OpenCode global plugins 경로에서 사용할 때는 환경에 따라
-`%USERPROFILE%/.config/opencode/plugins/project-viewer.ts`
-같은 top-level 엔트리 파일이 필요할 수 있음(실제 구현은 `project-viewer/plugin.ts` 재-export).
+1. **포트 4310**: 플러그인은 항상 4310 포트를 점유하려고 시도함. 서버 시작 전 `killProcessOnPort()`로 기존 프로세스 제거.
+2. **이벤트 모델**: 서버-웹뷰 간 SSE/Push는 삭제됨. 웹뷰가 `/api/root` + `/api/refresh`를 1초 주기로 폴링하여 상태 동기화.
+3. **파일 트리**: `walk()` 함수는 `EPERM`/`EACCES`/`ENOENT` 에러를 건너뛰어 트리 생성 실패 방지. 특정 폴더(`.git`, `node_modules` 등)는 스캔 제외.
+4. **글로벌 환경**: OpenCode 글로벌 플러그인 경로에서 동작하려면 `~/.config/opencode/plugins/project-viewer.ts` 같은 심볼릭 링크/Shim 파일 필요.
+5. **런타임**: `plugin.ts`는 반드시 `process.env.PARENT_PID`를 서버 환경변수로 전달하여, 플러그인 종료 시 서버도 자가 종료(`process.kill(PARENT_PID, 0)` 감시)하도록 설계됨.
+6. **이미지/기타**: `.png`, `.svg` 등의 이미지는 `/api/raw` 호출, PlantUML은 PlantUML 서버 SVG 렌더링.
+7. **코드 폴딩**: 웹뷰(`App.jsx`)는 코드 블록별 폴딩/복사 기능 포함.

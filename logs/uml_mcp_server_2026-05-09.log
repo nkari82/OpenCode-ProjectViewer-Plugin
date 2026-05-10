@@ -329,3 +329,11 @@
 2026-05-09 22:35:46,484 - mcp.server.lowlevel.server - INFO - Processing request of type GetPromptRequest
 2026-05-09 22:35:46,501 - mcp.server.lowlevel.server - INFO - Processing request of type GetPromptRequest
 2026-05-09 22:35:46,517 - mcp.server.lowlevel.server - INFO - Processing request of type GetPromptRequest
+2026-05-10 00:19:34,861 - mcp.server.lowlevel.server - INFO - Processing request of type CallToolRequest
+2026-05-10 00:19:34,863 - mcp_core.tools.diagram_tools - INFO - Called generate_uml tool: type=sequence, code length=429
+2026-05-10 00:19:34,873 - mcp_core.core.utils - INFO - Generating diagram diagram_type=sequence format=svg code_len=429 code_sha256_12=5f0b20b1e411
+2026-05-10 00:19:35,259 - mcp_core.core.diagram_rendering - INFO - Attempting Kroki for sequence diagram
+2026-05-10 00:20:05,413 - mcp_core.core.diagram_rendering - WARNING - Kroki failed for sequence: Error connecting to Kroki: The read operation timed out. Attempting fallback...
+2026-05-10 00:20:05,414 - mcp_core.core.diagram_rendering - INFO - Falling back to PlantUML server for sequence
+2026-05-10 00:20:05,415 - mcp_core.core.diagram_rendering - INFO - Using PlantUML server fallback: http://plantuml-server:8080
+2026-05-10 00:20:13,069 - mcp_core.core.diagram_rendering - ERROR - Fallback also failed for sequence: [Errno 11001] getaddrinfo failed
