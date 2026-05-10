@@ -656,8 +656,8 @@ code {
   border-radius: 16px;
   overflow: auto;
   border: none !important;
-  padding: 0.5em;
   line-height: 1.4;
+  padding: 0.5em;
 }
 
 code {
@@ -674,7 +674,8 @@ code {
 
 .shiki .line {
   display: block;
-  line-height: 1.4;
+  padding: 0;
+  margin: 0;
 }
 
 .shiki .line::before {
