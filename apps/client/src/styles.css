@@ -656,6 +656,27 @@ code {
   border-radius: 16px;
   overflow: auto;
   border: none !important;
+  padding: 1em;
+}
+
+.shiki code {
+  counter-reset: line;
+}
+
+.shiki .line {
+  display: block;
+}
+
+.shiki .line::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 3em;
+  text-align: right;
+  margin-right: 1em;
+  color: #8b949e;
+  user-select: none;
+  font-size: 0.9em;
 }
 
 /* markdown */

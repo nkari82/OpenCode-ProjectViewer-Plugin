@@ -270,15 +270,17 @@ interface CodeBlockProps {
 }
 
 function CodeBlock({ rendered, symbols, onFileOpen, currentPath, viewMode }: CodeBlockProps) {
-  const sanitizedHtml = useMemo(() => DOMPurify.sanitize(rendered), [rendered]);
+  const sanitizedHtml = useMemo(() => DOMPurify.sanitize(rendered, { ADD_TAGS: ['pre', 'code', 'span'], ADD_ATTR: ['class'] }), [rendered]);
 
   const scrollToLine = (symbol: Symbol) => {
     if (viewMode === "text") {
       const container = document.querySelector('.code-block-content');
       if (!container) return;
       
-      const lineSpans = container.querySelectorAll('.line');
-      const targetLine = lineSpans[symbol.line - 1];
+      // Text 모드: 라인 번호 기반 스크롤. Shiki는 보통 .line 클래스를 사용함
+      // 만약 .line 요소가 없으면, 단순히 텍스트 컨테이너 내의 라인들로 접근
+      const lines = container.querySelectorAll('.line, .shiki span.line');
+      const targetLine = lines[symbol.line - 1];
       
       if (targetLine) {
           targetLine.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -286,8 +288,10 @@ function CodeBlock({ rendered, symbols, onFileOpen, currentPath, viewMode }: Cod
           setTimeout(() => targetLine.style.backgroundColor = 'transparent', 1000);
       }
     } else {
-      // Render 모드: ID 기반 스크롤
-      const slug = symbol.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      // Render 모드: ID 기반 스크롤. anchor 플러그인과 동일한 slugify 로직 필요
+      const slug = symbol.name.toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^\w-]/g, '');
       const targetElement = document.getElementById(slug);
       if (targetElement) {
         targetElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
