@@ -10,6 +10,8 @@ import { deflateRawSync } from "zlib";
 import { execSync } from "child_process";
 import MarkdownIt from "markdown-it";
 import hljs from "highlight.js";
+import anchor from "markdown-it-anchor";
+import toc from "markdown-it-table-of-contents";
 import { createHighlighter } from "shiki";
 // @ts-ignore
 import { DatabaseSync } from "node:sqlite";
@@ -190,10 +192,16 @@ const md = new MarkdownIt({
             .highlightAuto(code)
             .value;
     },
-});
-// 헤더 오픈 규칙 수정하여 ID 삽입
+})
+    .use(anchor)
+    .use(toc, { includeLevel: [1, 2, 3] });
+// 헤더 오픈 규칙 수정하여 ID 삽입 (anchor 플러그인이 처리하므로 제거하거나 anchor 옵션으로 대체 가능하지만 일단 유지)
 md.renderer.rules.heading_open = (tokens, idx, options, env, self) => {
     const token = tokens[idx];
+    // anchor 플러그인이 처리하는 경우와 중복될 수 있으므로, 이미 ID가 있다면 그대로 사용
+    if (token.attrs && token.attrs.some(attr => attr[0] === 'id')) {
+        return self.renderToken(tokens, idx, options);
+    }
     const content = tokens[idx + 1].content;
     const slug = content.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     return `<h${token.level} id="${slug}">`;
@@ -411,8 +419,28 @@ app.get("/api/file", async (req, res) => {
         const raw = fs.readFileSync(file, "utf8");
         if (ext === ".md") {
             const activeHighlighter = await ensureHighlighter();
-            // 1. Markdown 렌더링 결과 (Render 모드용)
-            const rendered = md.render(raw);
+            // 1. Markdown 렌더링 결과 (Render 모드용) - Shiki 하이라이팅 적용
+            const mdWithShiki = new MarkdownIt({
+                html: true,
+                linkify: true,
+                typographer: true,
+                highlight(code, lang) {
+                    if (activeHighlighter && lang) {
+                        try {
+                            return activeHighlighter.codeToHtml(code, {
+                                lang,
+                                theme: 'github-dark',
+                                lineNumbers: true
+                            });
+                        }
+                        catch (e) {
+                            console.error('Shiki highlight failed', e);
+                        }
+                    }
+                    return ''; // 기본값 사용 안함
+                }
+            });
+            const rendered = mdWithShiki.render(raw);
             // 2. Shiki 하이라이팅된 Raw 코드 (Text 모드용)
             let highlightedRaw = `<pre><code>${md.utils.escapeHtml(raw)}</code></pre>`;
             if (activeHighlighter) {
@@ -422,7 +450,17 @@ app.get("/api/file", async (req, res) => {
                     lineNumbers: true
                 });
             }
-            const symbols = extractSymbols(raw, 'markdown');
+            // 3. 심볼 추출 (헤더 기반)
+            const tokens = md.parse(raw, {});
+            const symbols = [];
+            for (let i = 0; i < tokens.length; i++) {
+                if (tokens[i].type === 'heading_open') {
+                    symbols.push({
+                        name: tokens[i + 1].content,
+                        line: tokens[i].map ? tokens[i].map[0] + 1 : 0
+                    });
+                }
+            }
             return res.json({
                 type: "markdown",
                 raw,

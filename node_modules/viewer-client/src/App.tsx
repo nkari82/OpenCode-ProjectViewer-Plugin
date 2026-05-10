@@ -266,30 +266,32 @@ interface CodeBlockProps {
   symbols?: Symbol[];
   onFileOpen?: (path: string, name: string) => void;
   currentPath?: string;
+  viewMode: "render" | "text";
 }
 
-function CodeBlock({ rendered, symbols, onFileOpen, currentPath }: CodeBlockProps) {
+function CodeBlock({ rendered, symbols, onFileOpen, currentPath, viewMode }: CodeBlockProps) {
   const sanitizedHtml = useMemo(() => DOMPurify.sanitize(rendered), [rendered]);
 
-  const scrollToLine = (line: number) => {
-    const container = document.querySelector('.code-block-content');
-    if (!container) return;
-    
-    // shiki/monokai 등 테마에 따라 행 번호가 포함된 스팬 구조를 타겟팅합니다.
-    // 보통 line 클래스를 가진 요소들이 줄 단위로 존재합니다.
-    const lineSpans = container.querySelectorAll('.line');
-    
-    // 1-based index를 0-based index로 변환
-    const targetLine = lineSpans[line - 1];
-    
-    if (targetLine) {
-        targetLine.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        
-        // 시각적 피드백: 잠시 하이라이트 효과
-        targetLine.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
-        setTimeout(() => {
-            targetLine.style.backgroundColor = 'transparent';
-        }, 1000);
+  const scrollToLine = (symbol: Symbol) => {
+    if (viewMode === "text") {
+      const container = document.querySelector('.code-block-content');
+      if (!container) return;
+      
+      const lineSpans = container.querySelectorAll('.line');
+      const targetLine = lineSpans[symbol.line - 1];
+      
+      if (targetLine) {
+          targetLine.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          targetLine.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+          setTimeout(() => targetLine.style.backgroundColor = 'transparent', 1000);
+      }
+    } else {
+      // Render 모드: ID 기반 스크롤
+      const slug = symbol.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const targetElement = document.getElementById(slug);
+      if (targetElement) {
+        targetElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     }
   };
 
@@ -299,14 +301,15 @@ function CodeBlock({ rendered, symbols, onFileOpen, currentPath }: CodeBlockProp
         <div className="function-bar">
           <select 
             onChange={(e) => {
-              const line = parseInt(e.target.value);
-              if (!isNaN(line)) scrollToLine(line);
+              const index = parseInt(e.target.value);
+              const symbol = symbols[index];
+              if (symbol) scrollToLine(symbol);
             }}
             defaultValue=""
           >
             <option value="" disabled>네비게이션</option>
-            {symbols.map(s => (
-              <option key={s.name + s.line} value={s.line}>
+            {symbols.map((s, index) => (
+              <option key={index} value={index}>
                 {s.name}
               </option>
             ))}
@@ -891,7 +894,7 @@ export default function App() {
             return <PlantUmlViewer url={fileData.url} title={title} />
         }
         // Mermaid/Markdown 등은 rendered(HTML) 사용
-        return <CodeBlock rendered={fileData.rendered} symbols={fileData.symbols} onFileOpen={openFile} currentPath={currentPath} />
+        return <CodeBlock rendered={fileData.rendered} symbols={fileData.symbols} onFileOpen={openFile} currentPath={currentPath} viewMode={viewMode} />
     }
 
     // 2. 미디어 타입 (항상 렌더링)
@@ -906,11 +909,11 @@ export default function App() {
         const contentToRender = (viewMode === "text" && fileData.highlightedRaw) 
             ? fileData.highlightedRaw 
             : fileData.rendered;
-        return <CodeBlock rendered={contentToRender} symbols={fileData.symbols} onFileOpen={openFile} currentPath={currentPath} />
+        return <CodeBlock rendered={contentToRender} symbols={fileData.symbols} onFileOpen={openFile} currentPath={currentPath} viewMode={viewMode} />
     }
     
     // 4. 기본 텍스트 렌더링
-    return <CodeBlock rendered={`<pre><code>${escapeHtml(fileData.raw)}</code></pre>`} />
+    return <CodeBlock rendered={`<pre><code>${escapeHtml(fileData.raw)}</code></pre>`} viewMode={viewMode} />
   }
 
   const [sidebarVisible, setSidebarVisible] = useState(window.innerWidth > 768);

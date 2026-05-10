@@ -11,6 +11,8 @@
     "express": "^4.19.2",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.0",
+    "markdown-it-anchor": "^9.2.0",
+    "markdown-it-table-of-contents": "^1.2.0",
     "shiki": "^1.29.2",
     "ws": "^8.20.0"
   },
