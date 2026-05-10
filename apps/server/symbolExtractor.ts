@@ -8,14 +8,21 @@ export function extractSymbols(code: string, lang: string): Symbol[] {
   
   // 언어별 함수/클래스 패턴 정의
   const patterns: Record<string, RegExp> = {
+    c: /\b([A-Za-z_][A-Za-z0-9_]*)\s*\((?:[^)(]|\([^)(]*\))*\)\s*\{/g,
     cpp: /\b([A-Za-z_][A-Za-z0-9_]*)\s*\((?:[^)(]|\([^)(]*\))*\)\s*\{/g,
+    "objective-c": /[-+]\s*\([^)]+\)\s*([A-Za-z_][A-Za-z0-9_]*)/g,
     typescript: /(?:function|class|interface|type)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+    tsx: /(?:function|class|interface|type)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
     javascript: /(?:function|class)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+    jsx: /(?:function|class)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
     python: /(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
     rust: /(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
     go: /(?:func|type|struct)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
     java: /(?:class|interface|void|int|String|boolean)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g,
+    kotlin: /(?:fun|class|object|interface)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+    scala: /(?:def|class|object|trait)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
     csharp: /(?:class|void|int|string|bool)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g,
+    swift: /(?:func|class|struct|enum|protocol)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
     markdown: /^(#{1,6})\s+(.*)/gm,
   };
 
