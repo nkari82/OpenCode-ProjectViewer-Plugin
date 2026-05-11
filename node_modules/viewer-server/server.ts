@@ -5,7 +5,6 @@ import os from "os"
 import path from "path"
 import { fileURLToPath } from "url"
 import { extractSymbols } from "./symbolExtractor.js"
-import { WebSocketServer, WebSocket } from "ws"
 import { deflateRawSync } from "zlib"
 import { execSync } from "child_process"
 
@@ -123,7 +122,6 @@ app.use(express.json())
 
 let parentWatchTimer: ReturnType<typeof setInterval> | null = null
 let httpServer: ReturnType<typeof app.listen> | null = null
-let wss: InstanceType<typeof WebSocketServer> | null = null
 let shuttingDown = false
 
 function shutdownServer(reason: string, details: string | null) {
@@ -131,17 +129,6 @@ function shutdownServer(reason: string, details: string | null) {
   shuttingDown = true
 
   console.log("[viewer] shutdown:", reason, details || "")
-
-  if (wss) {
-    for (const client of wss.clients) {
-      try {
-        client.send(JSON.stringify({ type: "closing" }))
-        client.close()
-      } catch (err) {
-        console.error("[viewer:ws client close failed]", err)
-      }
-    }
-  }
 
   if (parentWatchTimer) {
     clearInterval(parentWatchTimer)
@@ -171,31 +158,16 @@ let lastKeepaliveAt = MANAGED ? Date.now() : 0
 let ROOT = process.env.PROJECT_ROOT || process.cwd()
 let lastRefreshAt = Date.now()
 
-function broadcastWsEvent(payload: object) {
-  if (!wss) return
-  const data = JSON.stringify(payload)
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      try {
-        client.send(data)
-      } catch (err) {
-        console.error("[viewer:ws send failed]", err)
-      }
-    }
-  }
-}
-
-function publishRefresh(source: string) {
+function publishRefresh() {
   lastRefreshAt = Date.now()
-  broadcastWsEvent({ type: source, root: ROOT, refreshAt: lastRefreshAt })
 }
 
 function publishProjectChanged() {
-  publishRefresh("project.changed")
+  publishRefresh()
 }
 
 function publishTreeChanged() {
-  publishRefresh("tree.changed")
+  publishRefresh()
 }
 
 type ShikiHighlighter = Awaited<ReturnType<typeof createHighlighter>>
@@ -609,40 +581,6 @@ function killProcessOnPort(port: number) {
 
 function startServer(retry = true) {
   httpServer = app.listen(PORT, "0.0.0.0", () => {
-    wss = new WebSocketServer({
-      server: httpServer as any,
-      verifyClient: (info: any, cb: any) => {
-        const origin = info.origin
-        if (!origin || (origin !== `http://localhost:${PORT}` && origin !== `http://127.0.0.1:${PORT}`)) {
-          return cb(false, 403, "Forbidden")
-        }
-        cb(true)
-      },
-    })
-
-    wss.on("connection", (ws: any) => {
-      ws.isAlive = true
-      ws.on("pong", () => { ws.isAlive = true })
-      ws.on("error", (err: any) => {
-        console.error("[viewer:ws client error]", err?.message || err)
-      })
-      try {
-        ws.send(JSON.stringify({ type: "connected", root: ROOT, refreshAt: lastRefreshAt }))
-      } catch (err) {
-        console.error("[viewer:ws initial send failed]", err)
-      }
-    })
-
-    const pingInterval = setInterval(() => {
-      wss!.clients.forEach((ws: any) => {
-        if (ws.isAlive === false) return ws.terminate()
-        ws.isAlive = false
-        ws.ping()
-      })
-    }, 30000)
-
-    wss.on("close", () => clearInterval(pingInterval))
-
     console.log(`[viewer] running at http://0.0.0.0:${PORT} (also http://127.0.0.1:${PORT})`)
     console.log(`[viewer] mode: ${MANAGED ? "managed (90s keepalive timeout)" : "independent"}`)
   })

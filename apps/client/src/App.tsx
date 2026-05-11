@@ -38,7 +38,6 @@ const EMPTY_FILE_DATA: FileData = {
 }
 
 const REQUEST_TIMEOUT_MS = 5000
-const POLL_INTERVAL_MS = 5000
 
 async function fetchJson<T>(url: string, init: RequestInit = {}): Promise<T> {
   const controller = new AbortController()
@@ -152,7 +151,8 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
   }, [])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return
+    if (e.button !== 1) return
+    e.preventDefault()
     setDragging(true)
     dragStart.current = { x: e.clientX, y: e.clientY, tx: translate.x, ty: translate.y }
   }, [translate])
@@ -201,7 +201,7 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
         ref={containerRef}
         onWheel={handleWheel}
         onMouseDown={handleMouseDown}
-        style={{ cursor: dragging ? "grabbing" : "grab" }}
+        style={{ cursor: dragging ? "grabbing" : "default" }}
       >
         {svgHtml ? (
           <div
@@ -337,7 +337,6 @@ export default function App() {
   const syncTokenRef = useRef(0)
   const rootRef = useRef(root)
   const refreshRef = useRef(lastRefreshAt)
-  const pollInFlightRef = useRef(false)
 
   useEffect(() => { rootRef.current = root }, [root])
   useEffect(() => { refreshRef.current = lastRefreshAt }, [lastRefreshAt])
@@ -423,20 +422,14 @@ export default function App() {
   }
 
   async function checkRoot() {
-    if (pollInFlightRef.current) return
-    pollInFlightRef.current = true
-
     try {
       const [rootData, refreshData] = await Promise.all([
         fetchJson<{ root: string }>("/api/root"),
         fetchJson<{ refreshAt: number }>("/api/refresh"),
       ])
-
       await syncFromSnapshot({ root: rootData.root, refreshAt: refreshData.refreshAt })
     } catch (err) {
       console.error("checkRoot failed", err)
-    } finally {
-      pollInFlightRef.current = false
     }
   }
 
@@ -459,39 +452,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    let disposed = false
-
     void checkRoot()
-
-    const port = window.location.port === "5173" ? "4310" : window.location.port
-    const host = window.location.hostname
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws"
-
-    const ws = new WebSocket(`${protocol}://${host}:${port}`)
-
-    ws.onmessage = event => {
-      if (disposed) return
-
-      try {
-        const payload = JSON.parse(event.data)
-        if (payload.type === "heartbeat") return
-        void syncFromSnapshot(payload).catch(err => {
-          console.error("syncFromSnapshot failed", err)
-        })
-      } catch (err) {
-        console.error(err)
-      }
-    }
-
-    ws.onerror = () => { void checkRoot() }
-
-    const timer = setInterval(() => { void checkRoot() }, POLL_INTERVAL_MS)
-
-    return () => {
-      disposed = true
-      ws.close()
-      clearInterval(timer)
-    }
   }, [])
 
   useEffect(() => { void loadProjects() }, [])
