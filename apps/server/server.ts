@@ -106,7 +106,9 @@ function listOpencodeProjects(): { ok: boolean; error?: string; dbPath?: string;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-const DIST_DIR = path.join(__dirname, "../../client/dist")
+// Works for both tsx source (apps/server/) and compiled output (apps/server/dist/)
+const serverPkgDir = path.basename(__dirname) === "dist" ? path.dirname(__dirname) : __dirname
+const DIST_DIR = path.join(serverPkgDir, "../client/dist")
 const INDEX_HTML = path.join(DIST_DIR, "index.html")
 
 const PLANTUML_SERVER_URL = (
