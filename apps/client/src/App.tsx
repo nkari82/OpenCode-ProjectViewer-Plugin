@@ -282,7 +282,7 @@ function CodeBlock({ rendered, symbols, onFileOpen, currentPath, viewMode, fileT
           </select>
         </div>
       )}
-      <div className="code-block-content" style={{ maxHeight: "calc(100vh - 120px)", overflowY: "auto" }}>
+      <div className="code-block-content" style={{ maxHeight: "calc(100vh - 120px)", overflowY: "auto", overflowX: "auto" }}>
         <div
           className="preview-html"
           onClick={(e) => {
