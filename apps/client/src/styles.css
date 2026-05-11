@@ -283,7 +283,7 @@ body,
 
   background: #0d1117;
 
-  max-height: 300px;
+  max-height: min(480px, 60vh);
 
   overflow-y: auto;
 }
@@ -893,6 +893,29 @@ svg {
 .plantuml-loading {
   color: #8b949e;
   font-size: 14px;
+}
+
+.plantuml-error {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  border: 1px solid #f85149;
+  border-radius: 6px;
+  background: rgba(248, 81, 73, 0.1);
+  max-width: 600px;
+}
+
+.plantuml-error-title {
+  color: #f85149;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.plantuml-error-detail {
+  color: #e6edf3;
+  font-size: 13px;
+  font-family: monospace;
 }
 
 /* Scrollbar */

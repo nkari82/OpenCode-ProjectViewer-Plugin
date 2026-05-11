@@ -116,30 +116,16 @@ interface PlantUmlViewerProps {
 
 function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [svgHtml, setSvgHtml] = useState("")
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState(false)
   const [scale, setScale] = useState(1)
   const [translate, setTranslate] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
   const dragStart = useRef({ x: 0, y: 0, tx: 0, ty: 0 })
 
   useEffect(() => {
-    if (!url) return
-    let cancelled = false
-    fetch(url)
-      .then(r => {
-        if (!r.ok) throw new Error(`${r.status}`)
-        return r.text()
-      })
-      .then(text => {
-        if (!cancelled) setSvgHtml(text)
-      })
-      .catch(() => {
-        if (!cancelled) setSvgHtml("")
-      })
-    return () => { cancelled = true }
-  }, [url])
-
-  useEffect(() => {
+    setLoaded(false)
+    setError(false)
     setScale(1)
     setTranslate({ x: 0, y: 0 })
   }, [url])
@@ -203,18 +189,33 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
         onMouseDown={handleMouseDown}
         style={{ cursor: dragging ? "grabbing" : "default" }}
       >
-        {svgHtml ? (
-          <div
-            className="plantuml-svg-wrapper"
-            style={{
-              transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
-              transformOrigin: "center center",
-            }}
-            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svgHtml) }}
-          />
-        ) : (
+        {!loaded && !error && (
           <div className="plantuml-loading">Loading diagram…</div>
         )}
+        {error && (
+          <div className="plantuml-error">
+            <div className="plantuml-error-title">Failed to load diagram</div>
+            <div className="plantuml-error-detail">
+              <a href={url} target="_blank" rel="noreferrer">{url}</a>
+            </div>
+          </div>
+        )}
+        <div
+          className="plantuml-svg-wrapper"
+          style={{
+            display: loaded ? "block" : "none",
+            transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
+            transformOrigin: "center center",
+          }}
+        >
+          <img
+            src={url}
+            alt={title}
+            onLoad={() => setLoaded(true)}
+            onError={() => setError(true)}
+            style={{ display: "block", maxWidth: "none" }}
+          />
+        </div>
       </div>
     </div>
   )
@@ -444,6 +445,10 @@ export default function App() {
   }, [])
 
   useEffect(() => { void loadProjects() }, [])
+
+  useEffect(() => {
+    if (showProjectList) void loadProjects()
+  }, [showProjectList])
 
   useEffect(() => {
     if (viewMode !== "render" || fileData.type !== "mermaid") return
