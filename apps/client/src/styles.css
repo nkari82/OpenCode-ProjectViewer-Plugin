@@ -106,6 +106,42 @@ body,
   padding: 0 12px 12px 12px;
 }
 
+/* 사이드바 드래그 리사이즈 핸들 */
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 20;
+  transition: background 0.15s;
+}
+
+.sidebar-resize-handle:hover {
+  background: #58a6ff55;
+}
+
+/* 사이드바 하단 경로 표시줄 */
+.sidebar-path-bar {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  min-height: 26px;
+  font-size: 11px;
+  font-family: monospace;
+  color: #6e7681;
+  background: #0d1117;
+  border-top: 1px solid #21262d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  direction: rtl;
+  text-align: left;
+}
+
 .sidebar-close-btn {
   position: absolute;
   top: 10px;
@@ -250,6 +286,46 @@ body,
   max-height: 300px;
 
   overflow-y: auto;
+}
+
+.project-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid #21262d;
+  font-size: 12px;
+  color: #8b949e;
+  user-select: none;
+}
+
+.project-refresh-btn {
+  background: transparent;
+  color: #8b949e;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+
+.project-refresh-btn:hover:not(:disabled) {
+  color: #58a6ff;
+  background: #1f2937;
+}
+
+.project-refresh-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.project-list-error {
+  padding: 8px 12px;
+  color: #f85149;
+  font-size: 12px;
+  word-break: break-all;
 }
 
 .project-list-empty {

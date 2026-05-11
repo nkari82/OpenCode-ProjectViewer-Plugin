@@ -317,7 +317,16 @@ export default function App() {
   const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set())
   const [projects, setProjects] = useState<Project[]>([])
   const [showProjectList, setShowProjectList] = useState<boolean>(false)
+  const [projectsLoading, setProjectsLoading] = useState<boolean>(false)
+  const [projectsError, setProjectsError] = useState<string>("")
   const [sidebarVisible, setSidebarVisible] = useState(window.innerWidth > 768)
+  const [sidebarWidth, setSidebarWidth] = useState(340)
+  const [hoveredPath, setHoveredPath] = useState("")
+  const [resizing, setResizing] = useState(false)
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768)
+  const isResizingRef = useRef(false)
+  const resizeStartX = useRef(0)
+  const resizeStartWidth = useRef(0)
 
   const projectName = useMemo(() => {
     if (!root) return "No Project"
@@ -332,6 +341,46 @@ export default function App() {
 
   useEffect(() => { rootRef.current = root }, [root])
   useEffect(() => { refreshRef.current = lastRefreshAt }, [lastRefreshAt])
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= 768)
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [])
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isResizingRef.current) return
+      const w = Math.min(600, Math.max(180, resizeStartWidth.current + e.clientX - resizeStartX.current))
+      setSidebarWidth(w)
+    }
+    const onUp = () => {
+      if (!isResizingRef.current) return
+      isResizingRef.current = false
+      setResizing(false)
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+    return () => {
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+    }
+  }, [])
+
+  function startResize(e: React.MouseEvent) {
+    isResizingRef.current = true
+    setResizing(true)
+    resizeStartX.current = e.clientX
+    resizeStartWidth.current = sidebarWidth
+    e.preventDefault()
+  }
+
+  function relPath(full: string): string {
+    if (!full) return ""
+    const norm = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "")
+    const rel = norm(full).slice(norm(root).length).replace(/^\//, "")
+    return rel || full
+  }
 
   async function loadTree(expectedRoot: string) {
     const token = ++syncTokenRef.current
@@ -392,13 +441,20 @@ export default function App() {
   }
 
   async function loadProjects() {
+    setProjectsLoading(true)
+    setProjectsError("")
     try {
       const data = await fetchJson<any>("/api/projects")
       if (data.ok && Array.isArray(data.projects)) {
         setProjects(data.projects)
+      } else if (!data.ok) {
+        setProjectsError(data.error || "목록 로드 실패")
       }
     } catch (err) {
+      setProjectsError("서버 연결 실패")
       console.error("loadProjects failed", err)
+    } finally {
+      setProjectsLoading(false)
     }
   }
 
@@ -502,7 +558,10 @@ export default function App() {
           <div className="row">
             <div
               className={isDir ? "node dir-node" : isSelectable ? "node" : "node disabled"}
+              onMouseEnter={() => setHoveredPath(node.path)}
+              onMouseLeave={() => setHoveredPath("")}
               onClick={() => {
+                setHoveredPath(node.path)
                 if (isDir) {
                   toggleDir(node.path)
                   return
@@ -584,7 +643,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-container">
+    <div className="app-container" style={resizing ? { userSelect: "none", cursor: "col-resize" } : undefined}>
       <div className="sidebar-trigger-area" />
       <button
         className={`sidebar-toggle-btn ${sidebarVisible ? "hidden" : ""}`}
@@ -593,7 +652,10 @@ export default function App() {
         ▶
       </button>
 
-      <div className={`sidebar ${sidebarVisible ? "visible" : "hidden"}`}>
+      <div
+        className={`sidebar ${sidebarVisible ? "visible" : "hidden"}`}
+        style={!isMobile ? { width: sidebarWidth, transition: resizing ? "none" : undefined } : undefined}
+      >
         <div className="sidebar-fixed-header">
           <button className="sidebar-close-btn" onClick={() => setSidebarVisible(false)}>
             &times;
@@ -611,10 +673,27 @@ export default function App() {
 
             {showProjectList && (
               <div className="project-list">
-                {projects.length === 0 && (
+                <div className="project-list-header">
+                  <span>프로젝트 목록 ({projects.length})</span>
+                  <button
+                    className="project-refresh-btn"
+                    onClick={(e) => { e.stopPropagation(); void loadProjects() }}
+                    disabled={projectsLoading}
+                    title="목록 새로고침"
+                  >
+                    {projectsLoading ? "⟳" : "↺"}
+                  </button>
+                </div>
+                {projectsLoading && (
+                  <div className="project-list-empty">로딩 중…</div>
+                )}
+                {!projectsLoading && projectsError && (
+                  <div className="project-list-error" title={projectsError}>{projectsError}</div>
+                )}
+                {!projectsLoading && !projectsError && projects.length === 0 && (
                   <div className="project-list-empty">프로젝트 없음</div>
                 )}
-                {projects.map(p => (
+                {!projectsLoading && projects.map(p => (
                   <div
                     key={p.id}
                     className={p.worktree === root ? "project-list-item active" : "project-list-item"}
@@ -627,9 +706,14 @@ export default function App() {
                           body: JSON.stringify({ path: p.worktree }),
                         })
                         if (resp.ok) {
-                          setRoot(p.worktree)
-                          await loadTree(p.worktree)
-                          await loadProjects()
+                          const data = await resp.json()
+                          const resolvedRoot = data.root || p.worktree
+                          setRoot(resolvedRoot)
+                          setTitle("")
+                          setFileData(EMPTY_FILE_DATA)
+                          setViewMode("render")
+                          setOpenDirs(new Set())
+                          await loadTree(resolvedRoot)
                         }
                       } catch (err) {
                         console.error("switch project failed", err)
@@ -637,7 +721,7 @@ export default function App() {
                     }}
                   >
                     <span className="project-list-color" style={{ backgroundColor: p.iconColor || "#666" }} />
-                    <span className="project-list-name">
+                    <span className="project-list-name" title={p.worktree}>
                       {p.name || p.worktree.split(/[\\/]/).pop()}
                     </span>
                   </div>
@@ -649,6 +733,17 @@ export default function App() {
           </div>
         </div>
         <div className="sidebar-scrollable-tree">{render(tree)}</div>
+
+        <div
+          className="sidebar-path-bar"
+          title={hoveredPath || currentPath}
+        >
+          {relPath(hoveredPath || currentPath)}
+        </div>
+
+        {!isMobile && (
+          <div className="sidebar-resize-handle" onMouseDown={startResize} />
+        )}
       </div>
 
       <div

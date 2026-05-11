@@ -41,9 +41,31 @@ function listOpencodeProjects() {
     try {
         // @ts-ignore
         db = new DatabaseSync(dbPath, { readOnly: true });
-        const rows = db.prepare("SELECT id, worktree, vcs, name, icon_color, time_updated, time_created FROM project ORDER BY time_updated DESC").all();
+        const tableInfo = db.prepare("PRAGMA table_info(project)").all();
+        const colSet = new Set(tableInfo.map((c) => String(c.name)));
+        const has = (col) => colSet.has(col);
+        const selectParts = [
+            "id",
+            "worktree",
+            has("name") ? "name" : "NULL as name",
+            has("vcs") ? "vcs" : "NULL as vcs",
+            has("icon_color") ? "icon_color" : "NULL as icon_color",
+            has("time_updated") ? "time_updated" : "0 as time_updated",
+            has("time_created") ? "time_created" : "0 as time_created",
+        ];
+        const orderBy = has("time_updated") ? "ORDER BY time_updated DESC" : "";
+        const rows = db.prepare(`SELECT ${selectParts.join(", ")} FROM project ${orderBy}`).all();
         const projects = rows
-            .filter((r) => typeof r.worktree === "string" && r.worktree.trim().length > 0)
+            .filter((r) => {
+            if (typeof r.worktree !== "string" || !r.worktree.trim())
+                return false;
+            const normalized = r.worktree.trim().replace(/[/\\]+$/, "");
+            if (!normalized)
+                return false;
+            if (/^[a-zA-Z]:$/.test(normalized))
+                return false;
+            return true;
+        })
             .map((r) => ({
             id: r.id,
             worktree: r.worktree,
@@ -68,7 +90,7 @@ function listOpencodeProjects() {
     }
 }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DIST_DIR = path.join(__dirname, "../../apps/client/dist");
+const DIST_DIR = path.join(__dirname, "../../client/dist");
 const INDEX_HTML = path.join(DIST_DIR, "index.html");
 const PLANTUML_SERVER_URL = (process.env.PLANTUML_SERVER_URL || "https://www.plantuml.com/plantuml").replace(/\/$/, "");
 const PLANTUML_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
@@ -113,7 +135,9 @@ function shutdownServer(reason, details) {
     process.exit(0);
 }
 const PORT = Number(process.env.PORT) || 4310;
-const PARENT_PID = Number(process.env.PARENT_PID) || 0;
+// MANAGED = started by the plugin; independent = started manually without PARENT_PID
+const MANAGED = (Number(process.env.PARENT_PID) || 0) > 0;
+let lastKeepaliveAt = MANAGED ? Date.now() : 0;
 let ROOT = process.env.PROJECT_ROOT || process.cwd();
 let lastRefreshAt = Date.now();
 function broadcastWsEvent(payload) {
@@ -122,7 +146,12 @@ function broadcastWsEvent(payload) {
     const data = JSON.stringify(payload);
     for (const client of wss.clients) {
         if (client.readyState === WebSocket.OPEN) {
-            client.send(data);
+            try {
+                client.send(data);
+            }
+            catch (err) {
+                console.error("[viewer:ws send failed]", err);
+            }
         }
     }
 }
@@ -216,10 +245,8 @@ function walk(dir) {
     try {
         entries = fs.readdirSync(dir);
     }
-    catch (err) {
-        if (err?.code === "EPERM" || err?.code === "EACCES")
-            return [];
-        throw err;
+    catch {
+        return [];
     }
     const result = [];
     for (const file of entries) {
@@ -280,11 +307,22 @@ app.post("/api/refresh", (_, res) => {
     publishTreeChanged();
     res.json({ ok: true, refreshAt: lastRefreshAt });
 });
+app.post("/api/keepalive", (_req, res) => {
+    if (MANAGED)
+        lastKeepaliveAt = Date.now();
+    res.json({ ok: true });
+});
 app.get("/api/refresh", (_, res) => {
     res.json({ refreshAt: lastRefreshAt });
 });
 app.get("/api/tree", (_, res) => {
-    res.json(walk(ROOT));
+    try {
+        res.json(walk(ROOT));
+    }
+    catch (err) {
+        console.error("[viewer:tree error]", err);
+        res.json([]);
+    }
 });
 const langMap = {
     ".cs": "csharp",
@@ -439,23 +477,17 @@ if (process.platform === "win32") {
 }
 process.on("uncaughtException", err => {
     console.error("[viewer:uncaughtException]", err);
-    shutdownServer("uncaughtException", err?.message);
 });
 process.on("unhandledRejection", reason => {
     console.error("[viewer:unhandledRejection]", reason);
-    shutdownServer("unhandledRejection", String(reason));
 });
-if (PARENT_PID > 0) {
+// Managed mode: auto-shutdown if plugin stops sending keepalives (90s timeout)
+if (MANAGED) {
     parentWatchTimer = setInterval(() => {
-        try {
-            process.kill(PARENT_PID, 0);
+        if (Date.now() - lastKeepaliveAt > 90_000) {
+            shutdownServer("keepalive timeout", null);
         }
-        catch (err) {
-            if (err?.code === "ESRCH") {
-                shutdownServer("parent exited", null);
-            }
-        }
-    }, 1000);
+    }, 10_000);
     parentWatchTimer.unref?.();
 }
 function killProcessOnPort(port) {
@@ -504,7 +536,15 @@ function startServer(retry = true) {
         wss.on("connection", (ws) => {
             ws.isAlive = true;
             ws.on("pong", () => { ws.isAlive = true; });
-            ws.send(JSON.stringify({ type: "connected", root: ROOT, refreshAt: lastRefreshAt }));
+            ws.on("error", (err) => {
+                console.error("[viewer:ws client error]", err?.message || err);
+            });
+            try {
+                ws.send(JSON.stringify({ type: "connected", root: ROOT, refreshAt: lastRefreshAt }));
+            }
+            catch (err) {
+                console.error("[viewer:ws initial send failed]", err);
+            }
         });
         const pingInterval = setInterval(() => {
             wss.clients.forEach((ws) => {
@@ -516,9 +556,7 @@ function startServer(retry = true) {
         }, 30000);
         wss.on("close", () => clearInterval(pingInterval));
         console.log(`[viewer] running at http://0.0.0.0:${PORT} (also http://127.0.0.1:${PORT})`);
-        if (PARENT_PID > 0) {
-            console.log("[viewer] parent pid:", PARENT_PID);
-        }
+        console.log(`[viewer] mode: ${MANAGED ? "managed (90s keepalive timeout)" : "independent"}`);
     });
     httpServer.on("error", (err) => {
         console.error("[viewer:listen error]", err);
@@ -532,4 +570,4 @@ function startServer(retry = true) {
     });
 }
 killProcessOnPort(PORT);
-startServer();
+setTimeout(() => startServer(), 200);
