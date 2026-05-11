@@ -728,7 +728,7 @@ body,
 /* 코드뷰 */
 .shiki {
   border-radius: 16px;
-  overflow: auto;
+  overflow: visible;
   border: none !important;
   line-height: 1.4;
   padding: 0.5em;
