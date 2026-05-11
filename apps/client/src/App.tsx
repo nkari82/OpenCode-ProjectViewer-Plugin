@@ -310,7 +310,6 @@ export default function App() {
   const [tree, setTree] = useState<TreeNode[]>([])
   const [title, setTitle] = useState<string>("")
   const [root, setRoot] = useState<string>("")
-  const [lastRefreshAt, setLastRefreshAt] = useState<number>(0)
   const [viewMode, setViewMode] = useState<"render" | "text">("render")
   const [fileData, setFileData] = useState<FileData>(EMPTY_FILE_DATA)
   const [currentPath, setCurrentPath] = useState<string>("")
@@ -336,10 +335,9 @@ export default function App() {
 
   const syncTokenRef = useRef(0)
   const rootRef = useRef(root)
-  const refreshRef = useRef(lastRefreshAt)
+  const checkRootPendingRef = useRef(false)
 
   useEffect(() => { rootRef.current = root }, [root])
-  useEffect(() => { refreshRef.current = lastRefreshAt }, [lastRefreshAt])
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth <= 768)
@@ -400,36 +398,24 @@ export default function App() {
     }
   }
 
-  async function syncFromSnapshot(snapshot: { root?: string; refreshAt?: number }) {
-    const rootValue = typeof snapshot.root === "string" ? snapshot.root : ""
-    const refreshAt = Number(snapshot.refreshAt) || 0
-
-    if (rootValue && rootValue !== rootRef.current) {
-      setRoot(rootValue)
-      setLastRefreshAt(refreshAt)
-      setTitle("")
-      setFileData(EMPTY_FILE_DATA)
-      setViewMode("render")
-      setOpenDirs(new Set())
-      await loadTree(rootValue)
-      return
-    }
-
-    if (refreshAt > 0 && refreshAt !== refreshRef.current) {
-      setLastRefreshAt(refreshAt)
-      await loadTree(rootValue || rootRef.current)
-    }
-  }
-
   async function checkRoot() {
+    if (checkRootPendingRef.current) return
+    checkRootPendingRef.current = true
     try {
-      const [rootData, refreshData] = await Promise.all([
-        fetchJson<{ root: string }>("/api/root"),
-        fetchJson<{ refreshAt: number }>("/api/refresh"),
-      ])
-      await syncFromSnapshot({ root: rootData.root, refreshAt: refreshData.refreshAt })
+      const data = await fetchJson<{ root: string }>("/api/root")
+      const rootValue = data.root || ""
+      if (rootValue && rootValue !== rootRef.current) {
+        setRoot(rootValue)
+        setTitle("")
+        setFileData(EMPTY_FILE_DATA)
+        setViewMode("render")
+        setOpenDirs(new Set())
+        await loadTree(rootValue)
+      }
     } catch (err) {
       console.error("checkRoot failed", err)
+    } finally {
+      checkRootPendingRef.current = false
     }
   }
 
@@ -453,6 +439,8 @@ export default function App() {
 
   useEffect(() => {
     void checkRoot()
+    const timer = setInterval(() => void checkRoot(), 5000)
+    return () => clearInterval(timer)
   }, [])
 
   useEffect(() => { void loadProjects() }, [])

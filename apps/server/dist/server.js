@@ -96,7 +96,6 @@ const PLANTUML_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq
 export const app = express();
 app.use(cors());
 app.use(express.json());
-let parentWatchTimer = null;
 let httpServer = null;
 let shuttingDown = false;
 function shutdownServer(reason, details) {
@@ -104,10 +103,6 @@ function shutdownServer(reason, details) {
         return;
     shuttingDown = true;
     console.log("[viewer] shutdown:", reason, details || "");
-    if (parentWatchTimer) {
-        clearInterval(parentWatchTimer);
-        parentWatchTimer = null;
-    }
     const forceTimer = setTimeout(() => process.exit(0), 1500);
     forceTimer.unref?.();
     try {
@@ -122,20 +117,21 @@ function shutdownServer(reason, details) {
     process.exit(0);
 }
 const PORT = Number(process.env.PORT) || 4310;
-// MANAGED = started by the plugin; independent = started manually without PARENT_PID
-const MANAGED = (Number(process.env.PARENT_PID) || 0) > 0;
-let lastKeepaliveAt = MANAGED ? Date.now() : 0;
-let ROOT = process.env.PROJECT_ROOT || process.cwd();
-let lastRefreshAt = Date.now();
-function publishRefresh() {
-    lastRefreshAt = Date.now();
+const PARENT_PID = Number(process.env.PARENT_PID) || 0;
+const ROOT_FILE = path.join(__dirname, "..", "..", "..", "viewer-root.json");
+function loadPersistedRoot() {
+    try {
+        const data = JSON.parse(fs.readFileSync(ROOT_FILE, "utf8"));
+        if (typeof data.root === "string" && fs.existsSync(data.root))
+            return data.root;
+    }
+    catch { }
+    return process.env.PROJECT_ROOT || "";
 }
-function publishProjectChanged() {
-    publishRefresh();
+function persistRoot(root) {
+    fs.promises.writeFile(ROOT_FILE, JSON.stringify({ root })).catch(() => { });
 }
-function publishTreeChanged() {
-    publishRefresh();
-}
+let ROOT = loadPersistedRoot();
 // lineNumbers is a valid Shiki runtime option but missing from v1.29 types
 function shikiHtml(h, code, lang) {
     return h.codeToHtml(code, { lang, theme: "github-dark", lineNumbers: true });
@@ -270,21 +266,9 @@ app.post("/api/open-project", (req, res) => {
         return res.status(400).json({ error: "path is required" });
     }
     ROOT = path.resolve(req.body.path);
-    publishProjectChanged();
+    persistRoot(ROOT);
     console.log("[viewer] root:", ROOT);
-    res.json({ ok: true, root: ROOT, refreshAt: lastRefreshAt });
-});
-app.post("/api/refresh", (_, res) => {
-    publishTreeChanged();
-    res.json({ ok: true, refreshAt: lastRefreshAt });
-});
-app.post("/api/keepalive", (_req, res) => {
-    if (MANAGED)
-        lastKeepaliveAt = Date.now();
-    res.json({ ok: true });
-});
-app.get("/api/refresh", (_, res) => {
-    res.json({ refreshAt: lastRefreshAt });
+    res.json({ ok: true, root: ROOT });
 });
 app.get("/api/tree", (_, res) => {
     try {
@@ -315,6 +299,11 @@ const langMap = {
     ".xml": "xml",
     ".css": "css",
     ".sh": "bash",
+    ".bat": "bat",
+    ".cmd": "bat",
+    ".ps1": "powershell",
+    ".psm1": "powershell",
+    ".psd1": "powershell",
     ".sql": "sql",
     ".rs": "rust",
     ".go": "go",
@@ -452,15 +441,6 @@ process.on("uncaughtException", err => {
 process.on("unhandledRejection", reason => {
     console.error("[viewer:unhandledRejection]", reason);
 });
-// Managed mode: auto-shutdown if plugin stops sending keepalives (90s timeout)
-if (MANAGED) {
-    parentWatchTimer = setInterval(() => {
-        if (Date.now() - lastKeepaliveAt > 90_000) {
-            shutdownServer("keepalive timeout", null);
-        }
-    }, 10_000);
-    parentWatchTimer.unref?.();
-}
 function killProcessOnPort(port) {
     try {
         if (process.platform === "win32") {
@@ -495,7 +475,7 @@ function killProcessOnPort(port) {
 function startServer(retry = true) {
     httpServer = app.listen(PORT, "0.0.0.0", () => {
         console.log(`[viewer] running at http://0.0.0.0:${PORT} (also http://127.0.0.1:${PORT})`);
-        console.log(`[viewer] mode: ${MANAGED ? "managed (90s keepalive timeout)" : "independent"}`);
+        console.log(`[viewer] mode: standalone`);
     });
     httpServer.on("error", (err) => {
         console.error("[viewer:listen error]", err);
@@ -507,6 +487,17 @@ function startServer(retry = true) {
         }
         shutdownServer("listen error", err?.message);
     });
+}
+if (PARENT_PID) {
+    const pidTimer = setInterval(() => {
+        try {
+            process.kill(PARENT_PID, 0);
+        }
+        catch {
+            shutdownServer("parent process gone", String(PARENT_PID));
+        }
+    }, 5_000);
+    pidTimer.unref();
 }
 killProcessOnPort(PORT);
 setTimeout(() => startServer(), 200);

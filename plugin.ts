@@ -112,7 +112,7 @@ async function startViewerServer() {
 
     const nodeExec = findNodeExecutable()
     const logPath = path.join(__dirname, "server.log")
-    pluginLog(`spawn (detached): ${nodeExec} ${serverScript}`)
+    pluginLog(`spawn: ${nodeExec} ${serverScript}`)
     pluginLog(`server.log → ${logPath}`)
     let logFd: number | undefined
     try {
@@ -177,18 +177,7 @@ const plugin = async (_ctx?: any) => {
     pluginLog(`Server startup error: ${err}`)
   })
   startWatchdog()
-  return {
-    event: async ({ event }: { event: any }) => {
-      const type = event?.type
-      if (
-        type === "file.watcher.updated" ||
-        type === "session.created" ||
-        type === "session.updated"
-      ) {
-        fetch(viewerUrl("/api/refresh"), { method: "POST" }).catch(() => {})
-      }
-    }
-  }
+  return {}
 }
 
 export default plugin
