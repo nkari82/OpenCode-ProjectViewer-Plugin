@@ -145,6 +145,18 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
   const [translate, setTranslate] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
   const dragStart = useRef({ x: 0, y: 0, tx: 0, ty: 0 })
+  const [showConfig, setShowConfig] = useState(false)
+  const [serverUrl, setServerUrl] = useState("")
+  const [serverUrlInput, setServerUrlInput] = useState("")
+  const [savingUrl, setSavingUrl] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  useEffect(() => {
+    fetch("/api/plantuml-server-url")
+      .then(r => r.json())
+      .then(d => { setServerUrl(d.url); setServerUrlInput(d.url) })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     setLoaded(false)
@@ -197,6 +209,24 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
     setTranslate({ x: 0, y: 0 })
   }, [])
 
+  const handleSaveServerUrl = useCallback(async () => {
+    setSavingUrl(true)
+    try {
+      const res = await fetch("/api/plantuml-server-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: serverUrlInput }),
+      })
+      const data = await res.json()
+      setServerUrl(data.url)
+      setShowConfig(false)
+      setLoaded(false)
+      setError(false)
+      setReloadKey(k => k + 1)
+    } catch {}
+    setSavingUrl(false)
+  }, [serverUrlInput])
+
   const handleDownload = useCallback(async (format: "svg" | "png") => {
     const downloadUrl = format === "png" ? `${url}?format=png` : url
     try {
@@ -234,6 +264,8 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
     win.document.close()
   }, [url, title])
 
+  const isPublicServer = serverUrl.includes("plantuml.com")
+
   return (
     <div className="plantuml-viewer">
       <div className="plantuml-controls">
@@ -245,7 +277,56 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
         <button onClick={() => handleDownload("svg")} title="Download SVG">SVG</button>
         <button onClick={() => handleDownload("png")} title="Download PNG">PNG</button>
         <button onClick={handlePrint} title="Print / Save as PDF">Print</button>
+        <span className="plantuml-controls-sep" />
+        <button
+          onClick={() => setShowConfig(v => !v)}
+          title="Configure PlantUML server"
+          className={showConfig ? "plantuml-server-btn active" : "plantuml-server-btn"}
+        >
+          {isPublicServer ? "⚠ Server" : "Server"}
+        </button>
       </div>
+
+      {showConfig && (
+        <div className="plantuml-config-panel">
+          <div className="plantuml-config-title">PlantUML Rendering Server</div>
+          {isPublicServer && (
+            <div className="plantuml-config-warning">
+              공개 서버(plantuml.com)는 최대 4096px 제한이 있어 대형 다이어그램이 렌더링되지 않습니다.
+              로컬 서버를 실행하면 제한 없이 렌더링할 수 있습니다.
+            </div>
+          )}
+          <div className="plantuml-config-section">
+            <div className="plantuml-config-label">로컬 서버 실행 방법 (Docker)</div>
+            <pre className="plantuml-config-code">docker run -d -p 8181:8080 \{"\n"}  -e PLANTUML_LIMIT_SIZE=32768 \{"\n"}  plantuml/plantuml-server:jetty</pre>
+          </div>
+          <div className="plantuml-config-row">
+            <input
+              className="plantuml-config-input"
+              value={serverUrlInput}
+              onChange={e => setServerUrlInput(e.target.value)}
+              placeholder="http://localhost:8181"
+              onKeyDown={e => { if (e.key === "Enter") handleSaveServerUrl() }}
+            />
+            <button
+              className="plantuml-config-save"
+              onClick={handleSaveServerUrl}
+              disabled={savingUrl || serverUrlInput === serverUrl}
+            >
+              {savingUrl ? "저장중…" : "적용"}
+            </button>
+            <button
+              className="plantuml-config-reset"
+              onClick={() => setServerUrlInput("https://www.plantuml.com/plantuml")}
+              title="공개 서버로 초기화"
+            >
+              초기화
+            </button>
+          </div>
+          <div className="plantuml-config-current">현재: {serverUrl}</div>
+        </div>
+      )}
+
       <div
         className="plantuml-canvas"
         ref={containerRef}
@@ -258,8 +339,12 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
         )}
         {error && (
           <div className="plantuml-error">
-            <div className="plantuml-error-title">PlantUML server unreachable</div>
-            <div className="plantuml-error-detail">Cannot connect to the PlantUML rendering server.</div>
+            <div className="plantuml-error-title">렌더링 실패</div>
+            <div className="plantuml-error-detail">
+              {isPublicServer
+                ? "다이어그램이 너무 크거나 서버에 연결할 수 없습니다. 위의 \"Server\" 버튼을 눌러 로컬 서버를 설정하세요."
+                : "PlantUML 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요."}
+            </div>
           </div>
         )}
         <div
@@ -271,7 +356,8 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
           }}
         >
           <img
-            src={url}
+            key={`${url}_${reloadKey}`}
+            src={`${url}?_t=${reloadKey}`}
             alt={title}
             onLoad={() => setLoaded(true)}
             onError={() => setError(true)}

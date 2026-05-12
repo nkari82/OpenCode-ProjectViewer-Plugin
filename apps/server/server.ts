@@ -5,7 +5,7 @@ import os from "os"
 import path from "path"
 import { fileURLToPath } from "url"
 import { extractSymbols } from "./symbolExtractor.js"
-import { deflateRawSync } from "zlib"
+import { deflateRawSync, inflateRawSync } from "zlib"
 import { execSync } from "child_process"
 
 import MarkdownIt from "markdown-it"
@@ -131,8 +131,28 @@ const serverPkgDir = path.basename(__dirname) === "dist" ? path.dirname(__dirnam
 const DIST_DIR = path.join(serverPkgDir, "../client/dist")
 const INDEX_HTML = path.join(DIST_DIR, "index.html")
 
-const PLANTUML_SERVER_URL = (
-  process.env.PLANTUML_SERVER_URL || "https://www.plantuml.com/plantuml"
+const SETTINGS_FILE = path.join(os.homedir(), ".config", "opencode", "plugins", "project-viewer", "settings.json")
+
+function loadSettings(): Record<string, string> {
+  try {
+    return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"))
+  } catch {
+    return {}
+  }
+}
+
+function saveSettings(data: Record<string, string>) {
+  try {
+    fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true })
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2))
+  } catch {}
+}
+
+const _settings = loadSettings()
+let plantumlServerUrl: string = (
+  process.env.PLANTUML_SERVER_URL ||
+  _settings.plantumlServerUrl ||
+  "https://www.plantuml.com/plantuml"
 ).replace(/\/$/, "")
 
 const PLANTUML_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_"
@@ -505,12 +525,40 @@ app.get("/api/file", async (req, res) => {
   }
 })
 
+app.get("/api/plantuml-server-url", (_req, res) => {
+  res.json({ url: plantumlServerUrl })
+})
+
+app.post("/api/plantuml-server-url", (req, res) => {
+  const { url } = req.body as { url?: string }
+  if (typeof url !== "string" || !url.trim()) {
+    return res.status(400).json({ error: "url is required" })
+  }
+  plantumlServerUrl = url.trim().replace(/\/$/, "")
+  const settings = loadSettings()
+  settings.plantumlServerUrl = plantumlServerUrl
+  saveSettings(settings)
+  res.json({ url: plantumlServerUrl })
+})
+
 app.get("/api/plantuml/:encoded", async (req, res) => {
   const { encoded } = req.params
   const format = req.query.format === "png" ? "png" : "svg"
-  const upstreamUrl = `${PLANTUML_SERVER_URL}/${format}/${encoded}`
+  // Jetty (and some other servers) have an ~8192-byte URI limit.
+  // For large diagrams, decode and POST the raw text instead.
+  const usePost = encoded.length > 2000
   try {
-    const upstream = await fetch(upstreamUrl)
+    let upstream: Response
+    if (usePost) {
+      const text = decodePlantUml(encoded)
+      upstream = await fetch(`${plantumlServerUrl}/${format}/`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        body: text,
+      })
+    } else {
+      upstream = await fetch(`${plantumlServerUrl}/${format}/${encoded}`)
+    }
     const contentType = upstream.headers.get("content-type") || (format === "png" ? "image/png" : "image/svg+xml")
     res.setHeader("Content-Type", contentType)
     res.status(upstream.status)
@@ -559,6 +607,20 @@ function encodePlantUml(text: string) {
     )
   }
   return encoded
+}
+
+function decodePlantUml(encoded: string): string {
+  const bytes: number[] = []
+  for (let i = 0; i < encoded.length; i += 4) {
+    const c1 = PLANTUML_ALPHABET.indexOf(encoded[i] ?? "")
+    const c2 = PLANTUML_ALPHABET.indexOf(encoded[i + 1] ?? "")
+    const c3 = PLANTUML_ALPHABET.indexOf(encoded[i + 2] ?? "")
+    const c4 = PLANTUML_ALPHABET.indexOf(encoded[i + 3] ?? "")
+    if (c1 !== -1 && c2 !== -1) bytes.push((c1 << 2) | (c2 >> 4))
+    if (c3 !== -1) bytes.push(((c2 & 0xf) << 4) | (c3 >> 2))
+    if (c4 !== -1) bytes.push(((c3 & 0x3) << 6) | c4)
+  }
+  return inflateRawSync(Buffer.from(bytes)).toString("utf8")
 }
 
 function escapeHtml(text: string) {
