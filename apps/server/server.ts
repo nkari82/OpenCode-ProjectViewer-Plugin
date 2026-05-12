@@ -447,7 +447,15 @@ app.get("/api/file", async (req, res) => {
 
     if (ext === ".md") {
       const md = await getMdShiki()
-      const rendered = md.render(raw)
+      const fileDir = path.dirname(file)
+      const rendered = md.render(raw).replace(
+        /<img([^>]*)\ssrc="([^"]+)"/g,
+        (_match, attrs: string, src: string) => {
+          if (/^(https?:\/\/|\/\/|data:|\/)/i.test(src)) return `<img${attrs} src="${src}"`
+          const abs = path.resolve(fileDir, src)
+          return `<img${attrs} src="/api/raw?path=${encodeURIComponent(abs)}"`
+        },
+      )
 
       const activeHighlighter = await ensureHighlighter()
       const highlightedRaw = activeHighlighter
