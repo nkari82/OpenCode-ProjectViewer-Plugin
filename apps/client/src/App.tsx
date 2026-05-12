@@ -407,7 +407,7 @@ interface CodeBlockProps {
 
 function CodeBlock({ rendered, symbols, onFileOpen, currentPath, viewMode, fileType }: CodeBlockProps) {
   const sanitizedHtml = useMemo(
-    () => DOMPurify.sanitize(rendered, { ADD_TAGS: ["pre", "code", "span", "div"], ADD_ATTR: ["class", "id"] }),
+    () => DOMPurify.sanitize(rendered, { ADD_TAGS: ["pre", "code", "span", "div"], ADD_ATTR: ["class", "id", "style"] }),
     [rendered],
   )
 
