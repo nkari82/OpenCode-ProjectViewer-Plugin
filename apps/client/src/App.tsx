@@ -407,7 +407,10 @@ interface CodeBlockProps {
 
 function CodeBlock({ rendered, symbols, onFileOpen, currentPath, viewMode, fileType }: CodeBlockProps) {
   const sanitizedHtml = useMemo(
-    () => DOMPurify.sanitize(rendered, { ADD_TAGS: ["pre", "code", "span", "div"], ADD_ATTR: ["class", "id", "style"] }),
+    () => DOMPurify.sanitize(rendered, {
+      ADD_TAGS: ["pre", "code", "span", "div", "input"],
+      ADD_ATTR: ["class", "id", "style", "checked", "disabled", "type"],
+    }),
     [rendered],
   )
 

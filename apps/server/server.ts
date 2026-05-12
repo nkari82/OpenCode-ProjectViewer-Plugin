@@ -13,6 +13,24 @@ import anchor from "markdown-it-anchor"
 import toc from "markdown-it-table-of-contents"
 // @ts-ignore
 import mk from "@traptitech/markdown-it-katex"
+// @ts-ignore
+import taskLists from "markdown-it-task-lists"
+// @ts-ignore
+import footnote from "markdown-it-footnote"
+// @ts-ignore
+import sub from "markdown-it-sub"
+// @ts-ignore
+import sup from "markdown-it-sup"
+// @ts-ignore
+import mark from "markdown-it-mark"
+// @ts-ignore
+import emoji from "markdown-it-emoji"
+// @ts-ignore
+import container from "markdown-it-container"
+// @ts-ignore
+import abbr from "markdown-it-abbr"
+// @ts-ignore
+import deflist from "markdown-it-deflist"
 
 import { createHighlighter } from "shiki"
 
@@ -278,6 +296,21 @@ async function getMdShiki(): Promise<MarkdownIt> {
     })
     .use(toc, { includeLevel: [1, 2, 3] })
     .use(mk, { throwOnError: false })
+    .use(taskLists, { enabled: true, label: true })
+    .use(footnote)
+    .use(sub)
+    .use(sup)
+    .use(mark)
+    .use(emoji)
+    .use(abbr)
+    .use(deflist)
+    .use(container, "info",    mkContainer("info",    "ℹ️ Info"))
+    .use(container, "tip",     mkContainer("tip",     "💡 Tip"))
+    .use(container, "warning", mkContainer("warning", "⚠️ Warning"))
+    .use(container, "danger",  mkContainer("danger",  "🚨 Danger"))
+    .use(container, "note",    mkContainer("note",    "📝 Note"))
+    .use(container, "success", mkContainer("success", "✅ Success"))
+    .use(container, "details", mkContainer("details", "📋 Details"))
   return mdShiki
 }
 
@@ -632,6 +665,19 @@ function decodePlantUml(encoded: string): string {
     if (c4 !== -1) bytes.push(((c3 & 0x3) << 6) | c4)
   }
   return inflateRawSync(Buffer.from(bytes)).toString("utf8")
+}
+
+function mkContainer(type: string, defaultTitle: string) {
+  return {
+    render(tokens: any[], idx: number) {
+      if (tokens[idx].nesting === 1) {
+        const custom = tokens[idx].info.trim().slice(type.length).trim()
+        const title = custom ? escapeHtml(custom) : defaultTitle
+        return `<div class="md-container md-container-${type}"><p class="md-container-title">${title}</p>\n`
+      }
+      return `</div>\n`
+    },
+  }
 }
 
 function escapeHtml(text: string) {

@@ -12,8 +12,17 @@
     "express": "^4.19.2",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.0",
+    "markdown-it-abbr": "^2.0.0",
     "markdown-it-anchor": "^9.2.0",
+    "markdown-it-container": "^4.0.0",
+    "markdown-it-deflist": "^3.0.0",
+    "markdown-it-emoji": "^3.0.0",
+    "markdown-it-footnote": "^4.0.0",
+    "markdown-it-mark": "^4.0.0",
+    "markdown-it-sub": "^2.0.0",
+    "markdown-it-sup": "^2.0.0",
     "markdown-it-table-of-contents": "^1.2.0",
+    "markdown-it-task-lists": "^2.1.1",
     "shiki": "^1.29.2"
   },
   "devDependencies": {
