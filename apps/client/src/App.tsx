@@ -150,6 +150,8 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
   const [serverUrlInput, setServerUrlInput] = useState("")
   const [savingUrl, setSavingUrl] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [svgText, setSvgText] = useState("")
+  const [naturalSize, setNaturalSize] = useState({ w: 800, h: 600 })
 
   useEffect(() => {
     fetch("/api/plantuml-server-url")
@@ -158,12 +160,44 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
       .catch(() => {})
   }, [])
 
+  // Reset view position when switching to a different file
   useEffect(() => {
-    setLoaded(false)
-    setError(false)
     setScale(1)
     setTranslate({ x: 0, y: 0 })
   }, [url])
+
+  // Fetch SVG as text so we can scale dimensions directly (crisp at any zoom)
+  useEffect(() => {
+    setLoaded(false)
+    setError(false)
+    setSvgText("")
+    fetch(`${url}?_t=${reloadKey}`)
+      .then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.text() })
+      .then(text => {
+        if (!text.includes("<svg")) throw new Error("not svg")
+        const wm = text.match(/\bwidth="([0-9.]+)/)
+        const hm = text.match(/\bheight="([0-9.]+)/)
+        setNaturalSize({
+          w: wm ? parseFloat(wm[1]) : 800,
+          h: hm ? parseFloat(hm[1]) : 600,
+        })
+        setSvgText(DOMPurify.sanitize(text, { USE_PROFILES: { svg: true } }))
+        setLoaded(true)
+      })
+      .catch(() => setError(true))
+  }, [url, reloadKey])
+
+  // Scale SVG by updating width/height attributes directly — no pixel scaling
+  const scaledSvg = useMemo(() => {
+    if (!svgText) return ""
+    const w = Math.round(naturalSize.w * scale)
+    const h = Math.round(naturalSize.h * scale)
+    return svgText
+      .replace(/(<svg\b[^>]*)\bwidth="[^"]*"/, `$1width="${w}px"`)
+      .replace(/(<svg\b[^>]*)\bheight="[^"]*"/, `$1height="${h}px"`)
+      .replace(/(style="[^"]*)\bwidth:[^;]*;/, `$1width:${w}px;`)
+      .replace(/(style="[^"]*)\bheight:[^;]*;/, `$1height:${h}px;`)
+  }, [svgText, naturalSize, scale])
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -351,19 +385,11 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
           className="plantuml-svg-wrapper"
           style={{
             display: loaded ? "block" : "none",
-            transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
-            transformOrigin: "center center",
+            transform: `translate(${translate.x}px, ${translate.y}px)`,
+            transformOrigin: "top left",
           }}
-        >
-          <img
-            key={`${url}_${reloadKey}`}
-            src={`${url}?_t=${reloadKey}`}
-            alt={title}
-            onLoad={() => setLoaded(true)}
-            onError={() => setError(true)}
-            style={{ display: "block", maxWidth: "none" }}
-          />
-        </div>
+          dangerouslySetInnerHTML={{ __html: scaledSvg }}
+        />
       </div>
     </div>
   )
