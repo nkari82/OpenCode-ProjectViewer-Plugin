@@ -39,12 +39,35 @@ const EMPTY_FILE_DATA: FileData = {
 
 const REQUEST_TIMEOUT_MS = 5000
 
+function makeSessionId(): string {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2)
+  }
+}
+
+const SESSION_ID = (() => {
+  try {
+    let id = sessionStorage.getItem("viewer-session-id")
+    if (!id) {
+      id = makeSessionId()
+      sessionStorage.setItem("viewer-session-id", id)
+    }
+    return id
+  } catch {
+    return makeSessionId()
+  }
+})()
+
 async function fetchJson<T>(url: string, init: RequestInit = {}): Promise<T> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal })
+    const headers = new Headers(init.headers as HeadersInit)
+    headers.set("X-Session-Id", SESSION_ID)
+    const response = await fetch(url, { ...init, headers, signal: controller.signal })
     if (!response.ok) {
       throw new Error(`${url} failed (${response.status})`)
     }
@@ -174,6 +197,43 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
     setTranslate({ x: 0, y: 0 })
   }, [])
 
+  const handleDownload = useCallback(async (format: "svg" | "png") => {
+    const downloadUrl = format === "png" ? `${url}?format=png` : url
+    try {
+      const res = await fetch(downloadUrl)
+      const blob = await res.blob()
+      const a = document.createElement("a")
+      a.href = URL.createObjectURL(blob)
+      a.download = `${title}.${format}`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
+    } catch {}
+  }, [url, title])
+
+  const handlePrint = useCallback(() => {
+    const win = window.open("", "_blank")
+    if (!win) return
+    const origin = window.location.origin
+    win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <title>${title}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: white; display: flex; justify-content: center; padding: 20px; }
+    img { max-width: 100%; height: auto; }
+    @media print { @page { margin: 1cm; size: auto; } body { padding: 0; } }
+  </style>
+</head>
+<body>
+  <img src="${origin}${url}" onload="window.print(); window.close();" />
+</body>
+</html>`)
+    win.document.close()
+  }, [url, title])
+
   return (
     <div className="plantuml-viewer">
       <div className="plantuml-controls">
@@ -181,6 +241,10 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
         <span className="plantuml-scale">{Math.round(scale * 100)}%</span>
         <button onClick={() => setScale(s => Math.max(0.1, s - 0.2))}>−</button>
         <button onClick={resetView}>Reset</button>
+        <span className="plantuml-controls-sep" />
+        <button onClick={() => handleDownload("svg")} title="Download SVG">SVG</button>
+        <button onClick={() => handleDownload("png")} title="Download PNG">PNG</button>
+        <button onClick={handlePrint} title="Print / Save as PDF">Print</button>
       </div>
       <div
         className="plantuml-canvas"
@@ -194,10 +258,8 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
         )}
         {error && (
           <div className="plantuml-error">
-            <div className="plantuml-error-title">Failed to load diagram</div>
-            <div className="plantuml-error-detail">
-              <a href={url} target="_blank" rel="noreferrer">{url}</a>
-            </div>
+            <div className="plantuml-error-title">PlantUML server unreachable</div>
+            <div className="plantuml-error-detail">Cannot connect to the PlantUML rendering server.</div>
           </div>
         )}
         <div
@@ -420,11 +482,12 @@ export default function App() {
     }
   }
 
-  async function loadProjects() {
+  async function loadProjects(forceRefresh = false) {
     setProjectsLoading(true)
     setProjectsError("")
     try {
-      const data = await fetchJson<any>("/api/projects")
+      const url = forceRefresh ? "/api/projects?refresh=1" : "/api/projects"
+      const data = await fetchJson<any>(url)
       if (data.ok && Array.isArray(data.projects)) {
         setProjects(data.projects)
       } else if (!data.ok) {
@@ -631,7 +694,7 @@ export default function App() {
                   <span>프로젝트 목록 ({projects.length})</span>
                   <button
                     className="project-refresh-btn"
-                    onClick={(e) => { e.stopPropagation(); void loadProjects() }}
+                    onClick={(e) => { e.stopPropagation(); void loadProjects(true) }}
                     disabled={projectsLoading}
                     title="목록 새로고침"
                   >
@@ -656,7 +719,7 @@ export default function App() {
                       try {
                         const resp = await fetch("/api/open-project", {
                           method: "POST",
-                          headers: { "Content-Type": "application/json" },
+                          headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
                           body: JSON.stringify({ path: p.worktree }),
                         })
                         if (resp.ok) {

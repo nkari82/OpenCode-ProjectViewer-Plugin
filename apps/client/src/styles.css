@@ -860,6 +860,14 @@ svg {
   background: #374151;
 }
 
+.plantuml-controls-sep {
+  width: 1px;
+  height: 18px;
+  background: #30363d;
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
 .plantuml-scale {
   font-size: 13px;
   color: #8b949e;

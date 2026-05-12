@@ -97,12 +97,22 @@ async function startViewerServer() {
   const p = (async () => {
     pluginLog("startViewerServer() 진입")
 
+    // 서버가 이미 살아 있으면 → 재사용. 이 인스턴스 PID만 등록해서 마지막 종료 시 서버도 내려가게.
+    if (await pingServer()) {
+      pluginLog("서버 이미 실행 중, PID 등록 후 재사용")
+      try {
+        await fetchWithTimeout(viewerUrl("/api/register-pid"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pid: process.pid }),
+        })
+      } catch {}
+      return true
+    }
+
+    // 서버가 없으면 → 포트에 좀비 프로세스만 제거하고 신규 스폰
     pluginLog(`포트 ${currentPort} 킬 중...`)
     await killProcessOnPort(currentPort)
-    for (let i = 0; i < 10; i++) {
-      if (!(await pingServer())) break
-      await new Promise(r => setTimeout(r, 300))
-    }
 
     const serverScript = path.join(__dirname, "apps", "server", "dist", "server.js")
     if (!fs.existsSync(serverScript)) {

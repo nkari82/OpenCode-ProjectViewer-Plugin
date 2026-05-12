@@ -43,7 +43,20 @@ interface Project {
   timeCreated: number
 }
 
-function listOpencodeProjects(): { ok: boolean; error?: string; dbPath?: string; projects: Project[] } {
+let projectsCache: { result: ReturnType<typeof _listOpencodeProjects>; ts: number } | null = null
+const PROJECTS_CACHE_TTL = 30_000
+
+function listOpencodeProjects() {
+  const now = Date.now()
+  if (projectsCache && now - projectsCache.ts < PROJECTS_CACHE_TTL) {
+    return projectsCache.result
+  }
+  const result = _listOpencodeProjects()
+  projectsCache = { result, ts: now }
+  return result
+}
+
+function _listOpencodeProjects(): { ok: boolean; error?: string; dbPath?: string; projects: Project[] } {
   if (!DatabaseSync) {
     return { ok: false, error: "node:sqlite unavailable", projects: [] }
   }
@@ -55,8 +68,15 @@ function listOpencodeProjects(): { ok: boolean; error?: string; dbPath?: string;
 
   let db = null
   try {
+    // Open without readOnly so we can enable WAL mode — this prevents our reads
+    // from holding a SHARED lock that blocks OpenCode's write transactions.
     // @ts-ignore
-    db = new DatabaseSync(dbPath, { readOnly: true })
+    db = new DatabaseSync(dbPath)
+
+    // WAL mode lets readers and writers proceed concurrently (no SHARED-lock contention).
+    try { db.prepare("PRAGMA journal_mode=WAL").get() } catch {}
+    // Immediately release any implicit write-lock from the PRAGMA above.
+    try { db.prepare("PRAGMA wal_checkpoint(PASSIVE)").get() } catch {}
 
     const tableInfo = db.prepare("PRAGMA table_info(project)").all() as any[]
     const colSet = new Set(tableInfo.map((c: any) => String(c.name)))
@@ -164,6 +184,14 @@ function persistRoot(root: string) {
 }
 
 let ROOT = loadPersistedRoot()
+
+const sessionRoots = new Map<string, string>()
+
+function getSessionRoot(req: express.Request): string {
+  const sid = req.headers["x-session-id"] as string | undefined
+  if (sid && sessionRoots.has(sid)) return sessionRoots.get(sid)!
+  return ROOT
+}
 type ShikiHighlighter = Awaited<ReturnType<typeof createHighlighter>>
 
 // lineNumbers is a valid Shiki runtime option but missing from v1.29 types
@@ -230,11 +258,11 @@ async function getMdShiki(): Promise<MarkdownIt> {
   return mdShiki
 }
 
-function safeResolve(file: string) {
+function safeResolve(file: string, root: string) {
   if (!file) throw new Error("Path required")
 
-  const resolved = path.resolve(ROOT, file)
-  const normalizedRoot = path.normalize(ROOT).toLowerCase()
+  const resolved = path.resolve(root, file)
+  const normalizedRoot = path.normalize(root).toLowerCase()
   const normalizedResolved = path.normalize(resolved).toLowerCase()
 
   if (!normalizedResolved.startsWith(normalizedRoot)) {
@@ -301,17 +329,18 @@ app.get("/api/ping", (_, res) => {
   res.json({ ok: true })
 })
 
-app.get("/api/root", (_, res) => {
-  res.json({ root: ROOT })
+app.get("/api/root", (req, res) => {
+  res.json({ root: getSessionRoot(req) })
 })
 
-app.get("/api/projects", (_, res) => {
+app.get("/api/projects", (req, res) => {
+  if (req.query.refresh === "1") projectsCache = null
   const result = listOpencodeProjects()
   res.json({
     ok: result.ok,
     error: result.error || null,
     dbPath: result.dbPath || null,
-    currentRoot: ROOT,
+    currentRoot: getSessionRoot(req),
     projects: result.projects,
   })
 })
@@ -321,16 +350,24 @@ app.post("/api/open-project", (req, res) => {
     return res.status(400).json({ error: "path is required" })
   }
 
-  ROOT = path.resolve(req.body.path)
-  persistRoot(ROOT)
-  console.log("[viewer] root:", ROOT)
+  const sid = req.headers["x-session-id"] as string | undefined
+  const newRoot = path.resolve(req.body.path)
 
-  res.json({ ok: true, root: ROOT })
+  if (sid) {
+    sessionRoots.set(sid, newRoot)
+    console.log("[viewer] session root:", sid.slice(0, 8), newRoot)
+  } else {
+    ROOT = newRoot
+    persistRoot(ROOT)
+    console.log("[viewer] global root:", ROOT)
+  }
+
+  res.json({ ok: true, root: newRoot })
 })
 
-app.get("/api/tree", (_, res) => {
+app.get("/api/tree", (req, res) => {
   try {
-    res.json(walk(ROOT))
+    res.json(walk(getSessionRoot(req)))
   } catch (err: any) {
     console.error("[viewer:tree error]", err)
     res.json([])
@@ -375,7 +412,7 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".web
 
 app.get("/api/file", async (req, res) => {
   try {
-    const file = safeResolve(req.query.path as string)
+    const file = safeResolve(req.query.path as string, getSessionRoot(req))
     const ext = path.extname(file).toLowerCase()
     const rawPath = `/api/raw?path=${encodeURIComponent(req.query.path as string)}`
 
@@ -423,12 +460,13 @@ app.get("/api/file", async (req, res) => {
         ? shikiHtml(activeHighlighter, raw, "plaintext")
         : `<pre><code>${escapeHtml(raw)}</code></pre>`
 
+      const encoded = encodePlantUml(raw)
       return res.json({
         type: "plantuml",
         raw,
         rendered: "",
         highlightedRaw,
-        url: `${PLANTUML_SERVER_URL}/svg/${encodePlantUml(raw)}`,
+        url: `/api/plantuml/${encoded}`,
       })
     }
 
@@ -467,9 +505,25 @@ app.get("/api/file", async (req, res) => {
   }
 })
 
+app.get("/api/plantuml/:encoded", async (req, res) => {
+  const { encoded } = req.params
+  const format = req.query.format === "png" ? "png" : "svg"
+  const upstreamUrl = `${PLANTUML_SERVER_URL}/${format}/${encoded}`
+  try {
+    const upstream = await fetch(upstreamUrl)
+    const contentType = upstream.headers.get("content-type") || (format === "png" ? "image/png" : "image/svg+xml")
+    res.setHeader("Content-Type", contentType)
+    res.status(upstream.status)
+    const body = await upstream.arrayBuffer()
+    res.send(Buffer.from(body))
+  } catch (err: any) {
+    res.status(502).json({ error: `PlantUML server unreachable: ${err.message}` })
+  }
+})
+
 app.get("/api/raw", (req, res) => {
   try {
-    const file = safeResolve(req.query.path as string)
+    const file = safeResolve(req.query.path as string, getSessionRoot(req))
     return res.sendFile(file)
   } catch (err: any) {
     return res.status(403).json({ error: err.message })
@@ -511,9 +565,10 @@ function escapeHtml(text: string) {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 }
 
-app.use(express.static(DIST_DIR))
+app.use(express.static(DIST_DIR, { etag: true, lastModified: true }))
 
 app.get("*", (_, res) => {
+  res.setHeader("Cache-Control", "no-cache")
   res.sendFile(INDEX_HTML)
 })
 
@@ -574,13 +629,25 @@ function startServer(retry = true) {
   })
 }
 
+// Track all plugin parent PIDs — server shuts down only when every parent is gone.
+const parentPids = new Set<number>()
+if (PARENT_PID) parentPids.add(PARENT_PID)
+
+app.post("/api/register-pid", (req, res) => {
+  const pid = Number(req.body?.pid)
+  if (pid > 0) {
+    parentPids.add(pid)
+    console.log("[viewer] registered pid:", pid, "total:", parentPids.size)
+  }
+  res.json({ ok: true, pids: parentPids.size })
+})
+
 if (PARENT_PID) {
   const pidTimer = setInterval(() => {
-    try {
-      process.kill(PARENT_PID, 0)
-    } catch {
-      shutdownServer("parent process gone", String(PARENT_PID))
+    for (const pid of [...parentPids]) {
+      try { process.kill(pid, 0) } catch { parentPids.delete(pid) }
     }
+    if (parentPids.size === 0) shutdownServer("all parent processes gone", null)
   }, 5_000)
   pidTimer.unref()
 }
