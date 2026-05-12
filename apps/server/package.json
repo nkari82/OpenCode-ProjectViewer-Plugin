@@ -7,6 +7,7 @@
     "dev": "tsx watch server.ts"
   },
   "dependencies": {
+    "@traptitech/markdown-it-katex": "^3.6.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "highlight.js": "^11.11.1",

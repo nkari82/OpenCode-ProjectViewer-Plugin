@@ -11,6 +11,7 @@ import DOMPurify from "dompurify"
 import mermaid from "mermaid"
 
 import "./styles.css"
+import "katex/dist/katex.min.css"
 
 mermaid.initialize({
   startOnLoad: false,

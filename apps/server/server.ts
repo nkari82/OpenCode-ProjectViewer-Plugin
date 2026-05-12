@@ -11,6 +11,8 @@ import { execSync } from "child_process"
 import MarkdownIt from "markdown-it"
 import anchor from "markdown-it-anchor"
 import toc from "markdown-it-table-of-contents"
+// @ts-ignore
+import mk from "@traptitech/markdown-it-katex"
 
 import { createHighlighter } from "shiki"
 
@@ -275,6 +277,7 @@ async function getMdShiki(): Promise<MarkdownIt> {
         s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""),
     })
     .use(toc, { includeLevel: [1, 2, 3] })
+    .use(mk, { throwOnError: false })
   return mdShiki
 }
 
