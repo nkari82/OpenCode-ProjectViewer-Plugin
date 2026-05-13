@@ -133,6 +133,133 @@ function isPreviewableFile(fileName: string) {
   return getFileCategory(fileName) !== "unknown"
 }
 
+const LANG_OPTIONS = [
+  { value: "ko", label: "한국어" },
+  { value: "en", label: "English" },
+  { value: "ja", label: "日本語" },
+  { value: "zh-CN", label: "中文(简)" },
+  { value: "zh-TW", label: "中文(繁)" },
+  { value: "fr", label: "Français" },
+  { value: "de", label: "Deutsch" },
+  { value: "es", label: "Español" },
+  { value: "ru", label: "Русский" },
+]
+
+interface PdfSegment {
+  text: string
+  isMath: boolean
+  translated?: string
+  translating?: boolean
+}
+
+function PdfViewer({ url, title, filePath }: { url: string; title: string; filePath: string }) {
+  const [showTranslation, setShowTranslation] = useState(false)
+  const [targetLang, setTargetLang] = useState("ko")
+  const [segments, setSegments] = useState<PdfSegment[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState("")
+  const [empty, setEmpty] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+
+  const runTranslation = useCallback(async (lang: string) => {
+    if (abortRef.current) abortRef.current.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
+
+    setLoading(true)
+    setError("")
+    setEmpty(false)
+    setSegments([])
+
+    let segs: PdfSegment[] = []
+    try {
+      const headers = new Headers({ "X-Session-Id": SESSION_ID })
+      const r = await fetch(`/api/pdf-text?path=${encodeURIComponent(filePath)}`, { headers, signal: ac.signal })
+      const data: { segments: PdfSegment[]; empty: boolean } = await r.json()
+      if (data.empty) { setEmpty(true); setLoading(false); return }
+      segs = data.segments.map(s => ({ ...s }))
+      setSegments([...segs])
+      setLoading(false)
+    } catch (err: any) {
+      if (err.name !== "AbortError") setError(err.message || "추출 실패")
+      setLoading(false)
+      return
+    }
+
+    for (let i = 0; i < segs.length; i++) {
+      if (ac.signal.aborted) break
+      if (segs[i].isMath) continue
+
+      setSegments(prev => prev.map((s, idx) => idx === i ? { ...s, translating: true } : s))
+      try {
+        const headers = new Headers({ "Content-Type": "application/json", "X-Session-Id": SESSION_ID })
+        const r = await fetch("/api/translate", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ text: segs[i].text, from: "auto", to: lang }),
+          signal: ac.signal,
+        })
+        const d: { translated?: string } = await r.json()
+        segs[i].translated = d.translated || segs[i].text
+      } catch {
+        segs[i].translated = segs[i].text
+      }
+      setSegments(prev => prev.map((s, idx) => idx === i ? { ...segs[i], translating: false } : s))
+    }
+  }, [filePath])
+
+  const handleToggle = useCallback(() => {
+    const next = !showTranslation
+    setShowTranslation(next)
+    if (next && segments.length === 0 && !loading) runTranslation(targetLang)
+  }, [showTranslation, segments.length, loading, runTranslation, targetLang])
+
+  const handleLangChange = useCallback((lang: string) => {
+    setTargetLang(lang)
+    if (showTranslation) runTranslation(lang)
+  }, [showTranslation, runTranslation])
+
+  return (
+    <div className="pdf-viewer-wrapper">
+      <div className="pdf-viewer-controls">
+        <button className={`toolbar-btn ${showTranslation ? "active" : ""}`} onClick={handleToggle}>
+          번역
+        </button>
+        {showTranslation && (
+          <select
+            className="pdf-lang-select"
+            value={targetLang}
+            onChange={e => handleLangChange(e.target.value)}
+          >
+            {LANG_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        )}
+      </div>
+      <div className="pdf-content-area">
+        <div className={`pdf-iframe-pane${showTranslation ? " with-panel" : ""}`}>
+          <iframe src={url} className="viewer-frame" title={title} />
+        </div>
+        {showTranslation && (
+          <div className="pdf-translation-pane">
+            {loading && <div className="pdf-translate-status">텍스트 추출 중…</div>}
+            {empty && <div className="pdf-translate-status pdf-translate-empty">텍스트를 추출할 수 없습니다.<br />스캔된 PDF(이미지 전용)는 번역이 지원되지 않습니다.</div>}
+            {error && <div className="pdf-translate-status pdf-translate-error">{error}</div>}
+            {segments.map((seg, i) =>
+              seg.isMath ? (
+                <div key={i} className="pdf-math">{seg.text}</div>
+              ) : (
+                <p key={i} className={`pdf-translation-text${seg.translating ? " pdf-translating" : ""}`}>
+                  {seg.translating ? "…" : (seg.translated ?? seg.text)}
+                </p>
+              )
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 interface PlantUmlViewerProps {
   url: string
   title: string
@@ -753,6 +880,7 @@ export default function App() {
 
     if (cat === "media") {
       if (fileData.type === "image") return <img src={fileData.url} alt={title} className="image-preview" />
+      if (fileData.type === "pdf") return <PdfViewer url={fileData.url!} title={title} filePath={currentPath} />
       return <iframe src={fileData.url} className="viewer-frame" title={title} />
     }
 

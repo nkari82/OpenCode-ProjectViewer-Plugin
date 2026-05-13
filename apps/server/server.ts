@@ -4,9 +4,14 @@ import fs from "fs"
 import os from "os"
 import path from "path"
 import { fileURLToPath } from "url"
+import { createRequire } from "module"
 import { extractSymbols } from "./symbolExtractor.js"
 import { deflateRawSync, inflateRawSync } from "zlib"
 import { execSync } from "child_process"
+
+const _require = createRequire(import.meta.url)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const pdfParse: (buf: Buffer, opts?: any) => Promise<{ text: string; numpages: number }> = _require("pdf-parse")
 
 import MarkdownIt from "markdown-it"
 import anchor from "markdown-it-anchor"
@@ -619,6 +624,70 @@ app.get("/api/raw", (req, res) => {
     return res.sendFile(file)
   } catch (err: any) {
     return res.status(403).json({ error: err.message })
+  }
+})
+
+function isMathSegment(text: string): boolean {
+  if (text.length < 3) return false
+  if (/[∫∑∏∂∇±×÷≤≥≠≈∞√∈∉⊂⊃∪∩αβγδεζηθλμνξπρστυφχψω]/.test(text)) return true
+  if (/\\[a-zA-Z]+[\s\{]/.test(text)) return true
+  if (/\$[^$]{1,100}\$/.test(text)) return true
+  if (text.length < 20 && /^[\s\d\w\+\-\*\/\=\(\)\[\]\{\}\^\._,:<>|]+$/.test(text)) return true
+  return false
+}
+
+app.get("/api/pdf-text", async (req, res) => {
+  try {
+    const file = safeResolve(req.query.path as string, getSessionRoot(req))
+    if (path.extname(file).toLowerCase() !== ".pdf") {
+      return res.status(400).json({ error: "Not a PDF" })
+    }
+    const buffer = fs.readFileSync(file)
+    const data = await pdfParse(buffer, { max: 0 })
+    const rawText = data.text || ""
+
+    if (!rawText.trim()) {
+      return res.json({ segments: [], empty: true, pages: data.numpages })
+    }
+
+    const paragraphs: string[] = []
+    let current = ""
+    for (const line of rawText.split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed) {
+        if (current.trim()) { paragraphs.push(current.trim()); current = "" }
+      } else {
+        current += (current ? " " : "") + trimmed
+      }
+    }
+    if (current.trim()) paragraphs.push(current.trim())
+
+    const segments = paragraphs
+      .filter(p => p.length > 1)
+      .map(text => ({ text, isMath: isMathSegment(text) }))
+
+    res.json({ segments, empty: false, pages: data.numpages })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post("/api/translate", async (req, res) => {
+  const { text, from = "auto", to = "ko" } = req.body as { text?: string; from?: string; to?: string }
+  if (!text || typeof text !== "string") return res.status(400).json({ error: "text required" })
+
+  try {
+    // Google Translate unofficial endpoint — no API key required
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(from)}&tl=${encodeURIComponent(to)}&dt=t&q=${encodeURIComponent(text)}`
+    const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } })
+    if (!resp.ok) throw new Error(`status ${resp.status}`)
+    const d = await resp.json() as any[]
+    // d[0] is array of [translated_chunk, original_chunk, ...]
+    const translated = (d[0] as any[]).map((chunk: any) => chunk[0]).filter(Boolean).join("")
+    if (!translated) throw new Error("no result")
+    return res.json({ translated })
+  } catch (err: any) {
+    res.status(502).json({ error: err.message })
   }
 })
 
