@@ -9,9 +9,15 @@ import {
 // @ts-ignore
 import DOMPurify from "dompurify"
 import mermaid from "mermaid"
+import * as pdfjsLib from "pdfjs-dist"
 
 import "./styles.css"
 import "katex/dist/katex.min.css"
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  "pdfjs-dist/build/pdf.worker.min.mjs",
+  import.meta.url,
+).href
 
 mermaid.initialize({
   startOnLoad: false,
@@ -145,116 +151,175 @@ const LANG_OPTIONS = [
   { value: "ru", label: "Русский" },
 ]
 
-interface PdfSegment {
+interface PdfLine {
   text: string
+  x: number
+  y: number
+  w: number
+  h: number
   isMath: boolean
-  translated?: string
-  translating?: boolean
 }
 
-function PdfViewer({ url, title, filePath }: { url: string; title: string; filePath: string }) {
-  const [showTranslation, setShowTranslation] = useState(false)
-  const [targetLang, setTargetLang] = useState("ko")
-  const [segments, setSegments] = useState<PdfSegment[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState("")
-  const [empty, setEmpty] = useState(false)
-  const abortRef = useRef<AbortController | null>(null)
+function clientIsMath(text: string, fontName?: string): boolean {
+  if (!text.trim() || text.trim().length < 2) return true
+  const fn = (fontName || "").toLowerCase()
+  if (fn.includes("math") || fn.includes("symbol") || fn.startsWith("cmmi") || fn.startsWith("cmex")) return true
+  if (/[∫∑∏∂∇±×÷≤≥≠≈∞√∈∉⊂⊃∪∩αβγδεζηθλμνξπρστυφχψω°]/.test(text)) return true
+  if (/\\[a-zA-Z]+/.test(text)) return true
+  const nonWord = (text.match(/[^a-zA-ZÀ-￿\s]/g) || []).length
+  return text.length > 0 && nonWord / text.length > 0.6
+}
 
-  const runTranslation = useCallback(async (lang: string) => {
-    if (abortRef.current) abortRef.current.abort()
-    const ac = new AbortController()
-    abortRef.current = ac
+function extractPdfLines(items: any[], scale: number, vpHeight: number): PdfLine[] {
+  const mapped = items
+    .filter(it => it.str?.trim())
+    .map(it => {
+      const [a, , , , e, f] = it.transform as number[]
+      const fh = Math.abs(a) * scale
+      return { str: it.str as string, fontName: it.fontName as string, sx: e * scale, sy: vpHeight - f * scale - fh, sw: (it.width as number) * scale, sh: fh || 10 }
+    })
 
-    setLoading(true)
-    setError("")
-    setEmpty(false)
-    setSegments([])
+  if (!mapped.length) return []
+  mapped.sort((a, b) => a.sy - b.sy || a.sx - b.sx)
 
-    let segs: PdfSegment[] = []
-    try {
-      const headers = new Headers({ "X-Session-Id": SESSION_ID })
-      const r = await fetch(`/api/pdf-text?path=${encodeURIComponent(filePath)}`, { headers, signal: ac.signal })
-      const data: { segments: PdfSegment[]; empty: boolean } = await r.json()
-      if (data.empty) { setEmpty(true); setLoading(false); return }
-      segs = data.segments.map(s => ({ ...s }))
-      setSegments([...segs])
-      setLoading(false)
-    } catch (err: any) {
-      if (err.name !== "AbortError") setError(err.message || "추출 실패")
-      setLoading(false)
-      return
+  const groups: typeof mapped[] = []
+  let cur: typeof mapped = []
+  let refY = mapped[0].sy
+
+  for (const s of mapped) {
+    if (cur.length && Math.abs(s.sy - refY) > 5) { groups.push(cur); cur = [s]; refY = s.sy }
+    else { cur.push(s); refY = (refY + s.sy) / 2 }
+  }
+  if (cur.length) groups.push(cur)
+
+  return groups.map(g => {
+    const text = g.map(s => s.str).join("").trim()
+    return {
+      text,
+      x: Math.min(...g.map(s => s.sx)),
+      y: Math.min(...g.map(s => s.sy)),
+      w: Math.max(...g.map(s => s.sx + s.sw)) - Math.min(...g.map(s => s.sx)) + 4,
+      h: Math.max(...g.map(s => s.sy + s.sh)) - Math.min(...g.map(s => s.sy)) + 2,
+      isMath: clientIsMath(text, g[0].fontName),
     }
+  }).filter(l => l.text.length > 0)
+}
 
-    for (let i = 0; i < segs.length; i++) {
-      if (ac.signal.aborted) break
-      if (segs[i].isMath) continue
+function PdfPageView({ pdfPage, scale, translateOn, targetLang }: { pdfPage: any; scale: number; translateOn: boolean; targetLang: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [lines, setLines] = useState<PdfLine[]>([])
+  const [translations, setTranslations] = useState<Record<number, string>>({})
+  const [vpH, setVpH] = useState(0)
+  const runRef = useRef("")
 
-      setSegments(prev => prev.map((s, idx) => idx === i ? { ...s, translating: true } : s))
-      try {
-        const headers = new Headers({ "Content-Type": "application/json", "X-Session-Id": SESSION_ID })
-        const r = await fetch("/api/translate", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ text: segs[i].text, from: "auto", to: lang }),
-          signal: ac.signal,
-        })
-        const d: { translated?: string } = await r.json()
-        segs[i].translated = d.translated || segs[i].text
-      } catch {
-        segs[i].translated = segs[i].text
+  useEffect(() => {
+    const vp = pdfPage.getViewport({ scale })
+    setVpH(vp.height)
+    const canvas = canvasRef.current!
+    canvas.width = vp.width
+    canvas.height = vp.height
+    const task = pdfPage.render({ canvasContext: canvas.getContext("2d")!, viewport: vp })
+    task.promise.catch(() => {})
+    return () => { try { task.cancel() } catch {} }
+  }, [pdfPage, scale])
+
+  useEffect(() => {
+    if (!vpH) return
+    pdfPage.getTextContent().then((tc: any) => {
+      setLines(extractPdfLines(tc.items || [], scale, vpH))
+      setTranslations({})
+      runRef.current = ""
+    })
+  }, [pdfPage, scale, vpH])
+
+  useEffect(() => {
+    const key = `${translateOn ? 1 : 0}-${targetLang}`
+    if (runRef.current === key) return
+    runRef.current = key
+    if (!translateOn || !lines.length) { setTranslations({}); return }
+
+    let cancelled = false
+    setTranslations({})
+    ;(async () => {
+      for (let i = 0; i < lines.length; i++) {
+        if (cancelled) break
+        if (lines[i].isMath) continue
+        try {
+          const r = await fetch("/api/translate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
+            body: JSON.stringify({ text: lines[i].text, from: "auto", to: targetLang }),
+          })
+          if (cancelled) break
+          const d: any = await r.json()
+          setTranslations(prev => ({ ...prev, [i]: d.translated || lines[i].text }))
+        } catch {}
       }
-      setSegments(prev => prev.map((s, idx) => idx === i ? { ...segs[i], translating: false } : s))
-    }
-  }, [filePath])
-
-  const handleToggle = useCallback(() => {
-    const next = !showTranslation
-    setShowTranslation(next)
-    if (next && segments.length === 0 && !loading) runTranslation(targetLang)
-  }, [showTranslation, segments.length, loading, runTranslation, targetLang])
-
-  const handleLangChange = useCallback((lang: string) => {
-    setTargetLang(lang)
-    if (showTranslation) runTranslation(lang)
-  }, [showTranslation, runTranslation])
+    })()
+    return () => { cancelled = true }
+  }, [translateOn, targetLang, lines])
 
   return (
-    <div className="pdf-viewer-wrapper">
-      <div className="pdf-viewer-controls">
-        <button className={`toolbar-btn ${showTranslation ? "active" : ""}`} onClick={handleToggle}>
-          번역
-        </button>
-        {showTranslation && (
-          <select
-            className="pdf-lang-select"
-            value={targetLang}
-            onChange={e => handleLangChange(e.target.value)}
+    <div style={{ position: "relative", display: "inline-block", lineHeight: 0, marginBottom: 8 }}>
+      <canvas ref={canvasRef} />
+      {translateOn && lines.map((line, i) =>
+        !line.isMath ? (
+          <div
+            key={i}
+            className="pdf-overlay-block"
+            style={{ left: line.x, top: line.y, width: line.w, minHeight: line.h, fontSize: Math.max(line.h * 0.78, 7) }}
           >
+            {translations[i] !== undefined
+              ? translations[i]
+              : <span className="pdf-overlay-pending" />}
+          </div>
+        ) : null
+      )}
+    </div>
+  )
+}
+
+function PdfJsViewer({ url, title }: { url: string; title: string; filePath: string }) {
+  const [pages, setPages] = useState<any[]>([])
+  const [scale, setScale] = useState(1.5)
+  const [translateOn, setTranslateOn] = useState(false)
+  const [targetLang, setTargetLang] = useState("ko")
+  const [loadError, setLoadError] = useState("")
+
+  useEffect(() => {
+    setPages([])
+    setLoadError("")
+    const task = pdfjsLib.getDocument({ url })
+    task.promise
+      .then(async doc => {
+        const ps: any[] = []
+        for (let i = 1; i <= doc.numPages; i++) ps.push(await doc.getPage(i))
+        setPages(ps)
+      })
+      .catch((e: any) => setLoadError(e.message || "PDF 로드 실패"))
+    return () => { task.destroy() }
+  }, [url])
+
+  return (
+    <div className="pdfjs-viewer">
+      <div className="pdf-viewer-controls">
+        <button className="toolbar-btn" onClick={() => setScale(s => Math.max(0.5, s - 0.25))}>−</button>
+        <span style={{ fontSize: 13, color: "#8b949e", minWidth: 48, textAlign: "center" }}>{Math.round(scale * 100)}%</span>
+        <button className="toolbar-btn" onClick={() => setScale(s => Math.min(4, s + 0.25))}>+</button>
+        <span className="plantuml-controls-sep" />
+        <button className={`toolbar-btn${translateOn ? " active" : ""}`} onClick={() => setTranslateOn(v => !v)}>번역</button>
+        {translateOn && (
+          <select className="pdf-lang-select" value={targetLang} onChange={e => setTargetLang(e.target.value)}>
             {LANG_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         )}
       </div>
-      <div className="pdf-content-area">
-        <div className={`pdf-iframe-pane${showTranslation ? " with-panel" : ""}`}>
-          <iframe src={url} className="viewer-frame" title={title} />
-        </div>
-        {showTranslation && (
-          <div className="pdf-translation-pane">
-            {loading && <div className="pdf-translate-status">텍스트 추출 중…</div>}
-            {empty && <div className="pdf-translate-status pdf-translate-empty">텍스트를 추출할 수 없습니다.<br />스캔된 PDF(이미지 전용)는 번역이 지원되지 않습니다.</div>}
-            {error && <div className="pdf-translate-status pdf-translate-error">{error}</div>}
-            {segments.map((seg, i) =>
-              seg.isMath ? (
-                <div key={i} className="pdf-math">{seg.text}</div>
-              ) : (
-                <p key={i} className={`pdf-translation-text${seg.translating ? " pdf-translating" : ""}`}>
-                  {seg.translating ? "…" : (seg.translated ?? seg.text)}
-                </p>
-              )
-            )}
-          </div>
-        )}
+      {loadError && <div className="pdf-translate-error" style={{ padding: "16px" }}>{loadError}</div>}
+      <div className="pdfjs-pages">
+        {!pages.length && !loadError && <div className="pdf-translate-status">로딩 중…</div>}
+        {pages.map((page, i) => (
+          <PdfPageView key={i} pdfPage={page} scale={scale} translateOn={translateOn} targetLang={targetLang} />
+        ))}
       </div>
     </div>
   )
@@ -880,7 +945,7 @@ export default function App() {
 
     if (cat === "media") {
       if (fileData.type === "image") return <img src={fileData.url} alt={title} className="image-preview" />
-      if (fileData.type === "pdf") return <PdfViewer url={fileData.url!} title={title} filePath={currentPath} />
+      if (fileData.type === "pdf") return <PdfJsViewer url={fileData.url!} title={title} filePath={currentPath} />
       return <iframe src={fileData.url} className="viewer-frame" title={title} />
     }
 
