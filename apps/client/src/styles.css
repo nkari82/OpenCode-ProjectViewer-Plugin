@@ -1166,10 +1166,10 @@ svg {
   box-shadow: 0 2px 10px rgba(0,0,0,0.6);
 }
 
-/* Translated text overlaid on the PDF canvas */
+/* Translated text overlaid on the PDF canvas (mask canvas erases original text below) */
 .pdf-overlay-block {
   position: absolute;
-  background: rgba(255, 253, 210, 0.95);
+  background: transparent;
   color: #111;
   line-height: 1.25;
   padding: 0 2px;
@@ -1177,7 +1177,6 @@ svg {
   word-break: break-word;
   box-sizing: border-box;
   pointer-events: none;
-  border-radius: 1px;
 }
 
 /* Shimmer placeholder while translating */

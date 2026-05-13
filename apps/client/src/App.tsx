@@ -207,6 +207,7 @@ function extractPdfLines(items: any[], scale: number, vpHeight: number): PdfLine
 
 function PdfPageView({ pdfPage, scale, translateOn, targetLang }: { pdfPage: any; scale: number; translateOn: boolean; targetLang: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const maskRef = useRef<HTMLCanvasElement>(null)
   const [lines, setLines] = useState<PdfLine[]>([])
   const [translations, setTranslations] = useState<Record<number, string>>({})
   const [vpH, setVpH] = useState(0)
@@ -231,6 +232,22 @@ function PdfPageView({ pdfPage, scale, translateOn, targetLang }: { pdfPage: any
       runRef.current = ""
     })
   }, [pdfPage, scale, vpH])
+
+  // Draw white mask over non-math text areas to hide original text
+  useEffect(() => {
+    const mask = maskRef.current
+    if (!mask || !vpH) return
+    const vp = pdfPage.getViewport({ scale })
+    mask.width = vp.width
+    mask.height = vp.height
+    const ctx = mask.getContext("2d")!
+    ctx.clearRect(0, 0, mask.width, mask.height)
+    if (!translateOn || !lines.length) return
+    ctx.fillStyle = "#ffffff"
+    for (const line of lines) {
+      if (!line.isMath) ctx.fillRect(line.x - 1, line.y - 1, line.w + 2, line.h + 2)
+    }
+  }, [translateOn, lines, pdfPage, scale, vpH])
 
   useEffect(() => {
     const key = `${translateOn ? 1 : 0}-${targetLang}`
@@ -262,6 +279,7 @@ function PdfPageView({ pdfPage, scale, translateOn, targetLang }: { pdfPage: any
   return (
     <div style={{ position: "relative", display: "inline-block", lineHeight: 0, marginBottom: 8 }}>
       <canvas ref={canvasRef} />
+      <canvas ref={maskRef} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }} />
       {translateOn && lines.map((line, i) =>
         !line.isMath ? (
           <div
