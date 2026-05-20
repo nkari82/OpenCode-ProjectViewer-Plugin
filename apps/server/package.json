@@ -24,6 +24,7 @@
     "markdown-it-table-of-contents": "^1.2.0",
     "markdown-it-task-lists": "^2.1.1",
     "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^5.7.284",
     "shiki": "^1.29.2"
   },
   "devDependencies": {

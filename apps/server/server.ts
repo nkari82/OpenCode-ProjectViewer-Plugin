@@ -3,15 +3,20 @@ import cors from "cors"
 import fs from "fs"
 import os from "os"
 import path from "path"
-import { fileURLToPath } from "url"
+import { fileURLToPath, pathToFileURL } from "url"
 import { createRequire } from "module"
 import { extractSymbols } from "./symbolExtractor.js"
 import { deflateRawSync, inflateRawSync } from "zlib"
 import { execSync } from "child_process"
 
 const _require = createRequire(import.meta.url)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const pdfParse: (buf: Buffer, opts?: any) => Promise<{ text: string; numpages: number }> = _require("pdf-parse")
+
+// pdfjs-dist for better text extraction (handles LaTeX / complex font encoding)
+// @ts-ignore
+import * as _pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs"
+// @ts-ignore
+const pdfjsLib: any = _pdfjsLib
+pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(_require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs")).href
 
 import MarkdownIt from "markdown-it"
 import anchor from "markdown-it-anchor"
@@ -29,7 +34,7 @@ import sup from "markdown-it-sup"
 // @ts-ignore
 import mark from "markdown-it-mark"
 // @ts-ignore
-import emoji from "markdown-it-emoji"
+import * as emojiPlugin from "markdown-it-emoji"
 // @ts-ignore
 import container from "markdown-it-container"
 // @ts-ignore
@@ -232,6 +237,36 @@ let ROOT = loadPersistedRoot()
 
 const sessionRoots = new Map<string, string>()
 
+// File response cache — keyed by absolute path, invalidated when mtime/size changes
+const FILE_CACHE_MAX = 200
+interface FileCacheEntry { mtime: number; size: number; result: object }
+const fileCache = new Map<string, FileCacheEntry>()
+
+function getFileCache(filePath: string): object | null {
+  const entry = fileCache.get(filePath)
+  if (!entry) return null
+  try {
+    const stat = fs.statSync(filePath)
+    if (stat.mtimeMs === entry.mtime && stat.size === entry.size) return entry.result
+  } catch {}
+  fileCache.delete(filePath)
+  return null
+}
+
+function setFileCache(filePath: string, result: object) {
+  if (fileCache.size >= FILE_CACHE_MAX) {
+    const first = fileCache.keys().next().value
+    if (first !== undefined) fileCache.delete(first)
+  }
+  try {
+    const stat = fs.statSync(filePath)
+    fileCache.set(filePath, { mtime: stat.mtimeMs, size: stat.size, result })
+  } catch {}
+}
+
+// Refresh sequence — increments when files change so clients can invalidate their caches
+let refreshSeq = 0
+
 function getSessionRoot(req: express.Request): string {
   const sid = req.headers["x-session-id"] as string | undefined
   if (sid && sessionRoots.has(sid)) return sessionRoots.get(sid)!
@@ -306,7 +341,7 @@ async function getMdShiki(): Promise<MarkdownIt> {
     .use(sub)
     .use(sup)
     .use(mark)
-    .use(emoji)
+    .use((emojiPlugin as any).full)
     .use(abbr)
     .use(deflist)
     .use(container, "info",    mkContainer("info",    "ℹ️ Info"))
@@ -337,51 +372,107 @@ function safeResolve(file: string, root: string) {
   return resolved
 }
 
-const SKIP_DIRS = new Set([".git", "node_modules", "dist", ".next", ".turbo", ".cache", ".pytest_cache"])
+function safeNoteResolve(filePath: string, root: string): string {
+  if (!filePath || !root) throw new Error("Path required")
+  const resolved = path.resolve(root, filePath)
+  const normalizedRoot = path.normalize(root).toLowerCase()
+  if (!path.normalize(resolved).toLowerCase().startsWith(normalizedRoot)) {
+    throw new Error("Access denied: Path traversal detected")
+  }
+  const rel = path.relative(root, resolved)
+  const notesDir = path.join(root, ".notes")
+  const notePath = path.join(notesDir, rel + ".md")
+  if (!path.normalize(notePath).toLowerCase().startsWith(path.normalize(notesDir).toLowerCase() + path.sep)) {
+    throw new Error("Access denied: Note path outside .notes directory")
+  }
+  return notePath
+}
+
+const SKIP_DIRS = new Set([".git", "node_modules", "dist", ".next", ".turbo", ".cache", ".pytest_cache", ".notes"])
+const DIR_FILE_LIMIT = 500
 
 interface TreeNode {
   type: "dir" | "file"
   name: string
   path: string
-  children?: TreeNode[]
+  truncated?: true
+  total?: number
+  offset?: number      // next offset to load for "load more"
+  parentPath?: string  // parent dir of this truncated node
 }
 
-function walk(dir: string): TreeNode[] {
-  let entries: string[] = []
+// Per-directory listing cache — stores raw dirs/files before slicing
+const TREE_CACHE_MAX = 150
+interface TreeCacheEntry { mtime: number; dirs: TreeNode[]; files: TreeNode[] }
+const treeListCache = new Map<string, TreeCacheEntry>()
 
+function getRawDirContents(dir: string): { dirs: TreeNode[]; files: TreeNode[] } | null {
+  const entry = treeListCache.get(dir)
+  if (!entry) return null
   try {
-    entries = fs.readdirSync(dir)
-  } catch {
-    return []
+    if (fs.statSync(dir).mtimeMs === entry.mtime) return entry
+  } catch {}
+  treeListCache.delete(dir)
+  return null
+}
+
+function setRawDirCache(dir: string, dirs: TreeNode[], files: TreeNode[]) {
+  if (treeListCache.size >= TREE_CACHE_MAX) {
+    const first = treeListCache.keys().next().value
+    if (first !== undefined) treeListCache.delete(first)
   }
+  try {
+    treeListCache.set(dir, { mtime: fs.statSync(dir).mtimeMs, dirs, files })
+  } catch {}
+}
 
-  const result: TreeNode[] = []
+// Shallow (non-recursive) directory listing with offset-based pagination
+function walkShallow(dir: string, offset = 0): TreeNode[] {
+  let contents = getRawDirContents(dir)
 
-  for (const file of entries) {
-    if (SKIP_DIRS.has(file)) continue
+  if (!contents) {
+    let entries: string[] = []
+    try { entries = fs.readdirSync(dir) } catch { return [] }
 
-    const full = path.join(dir, file)
-    let stat
+    const dirs: TreeNode[] = []
+    const files: TreeNode[] = []
 
-    try {
-      stat = fs.statSync(full)
-    } catch (err: any) {
-      if (err?.code === "EPERM" || err?.code === "EACCES" || err?.code === "ENOENT") continue
-      throw err
+    for (const file of entries) {
+      if (SKIP_DIRS.has(file)) continue
+      const full = path.join(dir, file)
+      let stat
+      try {
+        stat = fs.statSync(full)
+      } catch (err: any) {
+        if (err?.code === "EPERM" || err?.code === "EACCES" || err?.code === "ENOENT") continue
+        throw err
+      }
+      if (stat.isDirectory()) dirs.push({ type: "dir", name: file, path: full })
+      else files.push({ type: "file", name: file, path: full })
     }
 
-    if (stat.isDirectory()) {
-      result.push({ type: "dir", name: file, path: full, children: walk(full) })
-    } else {
-      result.push({ type: "file", name: file, path: full })
-    }
+    dirs.sort((a, b) => a.name.localeCompare(b.name))
+    files.sort((a, b) => a.name.localeCompare(b.name))
+    setRawDirCache(dir, dirs, files)
+    contents = { dirs, files, mtime: 0 } as any
   }
 
-  result.sort((a, b) => {
-    if (a.type === "dir" && b.type !== "dir") return -1
-    if (a.type !== "dir" && b.type === "dir") return 1
-    return a.name.localeCompare(b.name)
-  })
+  const { dirs, files } = contents!
+  const slice = files.slice(offset, offset + DIR_FILE_LIMIT)
+  const result: TreeNode[] = [...(offset === 0 ? dirs : []), ...slice]
+
+  if (files.length > offset + DIR_FILE_LIMIT) {
+    const remaining = files.length - offset - DIR_FILE_LIMIT
+    result.push({
+      type: "file",
+      name: `… ${remaining.toLocaleString()}개 더 보기`,
+      path: `${dir}/__more__`,
+      truncated: true,
+      total: files.length,
+      offset: offset + DIR_FILE_LIMIT,
+      parentPath: dir,
+    })
+  }
 
   return result
 }
@@ -391,7 +482,100 @@ app.get("/api/ping", (_, res) => {
 })
 
 app.get("/api/root", (req, res) => {
-  res.json({ root: getSessionRoot(req) })
+  res.json({ root: getSessionRoot(req), refreshSeq })
+})
+
+// ── File Search ──────────────────────────────────────────────────────────────
+
+const SEARCH_RESULT_LIMIT = 100
+const SEARCH_MATCHES_PER_FILE = 4
+const SEARCH_MAX_FILE_SIZE = 512 * 1024  // 512 KB
+
+const SEARCHABLE_EXTENSIONS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+  ".py", ".go", ".rs", ".java", ".kt", ".swift", ".scala",
+  ".c", ".cpp", ".h", ".hpp", ".cs", ".php", ".rb", ".lua",
+  ".md", ".markdown", ".txt", ".log",
+  ".json", ".jsonc", ".yaml", ".yml", ".toml", ".xml",
+  ".html", ".css", ".scss", ".sass", ".less",
+  ".sh", ".bash", ".ps1", ".bat", ".cmd",
+  ".sql", ".graphql", ".env", ".ini", ".conf", ".cfg",
+  ".dockerfile", ".gitignore", ".editorconfig",
+])
+
+interface SearchResult {
+  path: string
+  name: string
+  dir: string
+  matches?: { line: number; text: string }[]
+}
+
+function searchWalk(
+  dir: string,
+  query: string,
+  type: "name" | "content",
+  results: SearchResult[],
+) {
+  if (results.length >= SEARCH_RESULT_LIMIT) return
+  let entries: string[]
+  try { entries = fs.readdirSync(dir) } catch { return }
+
+  for (const file of entries) {
+    if (results.length >= SEARCH_RESULT_LIMIT) break
+    if (SKIP_DIRS.has(file)) continue
+    const full = path.join(dir, file)
+    let stat
+    try { stat = fs.statSync(full) } catch { continue }
+
+    if (stat.isDirectory()) {
+      searchWalk(full, query, type, results)
+      continue
+    }
+
+    if (type === "name") {
+      if (file.toLowerCase().includes(query)) {
+        results.push({ path: full, name: file, dir: path.dirname(full) })
+      }
+    } else {
+      const ext = path.extname(file).toLowerCase()
+      if (!SEARCHABLE_EXTENSIONS.has(ext)) continue
+      if (stat.size > SEARCH_MAX_FILE_SIZE) continue
+      try {
+        const content = fs.readFileSync(full, "utf8")
+        const lines = content.split("\n")
+        const matches: { line: number; text: string }[] = []
+        for (let i = 0; i < lines.length && matches.length < SEARCH_MATCHES_PER_FILE; i++) {
+          if (lines[i].toLowerCase().includes(query)) {
+            matches.push({ line: i + 1, text: lines[i].trimEnd().slice(0, 120) })
+          }
+        }
+        if (matches.length > 0) {
+          results.push({ path: full, name: file, dir: path.dirname(full), matches })
+        }
+      } catch {}
+    }
+  }
+}
+
+app.get("/api/search", (req, res) => {
+  try {
+    const q = ((req.query.q as string) || "").trim().toLowerCase()
+    if (q.length < 1) return res.json({ results: [] })
+    const type = req.query.type === "content" ? "content" : "name"
+    const root = getSessionRoot(req)
+    const results: SearchResult[] = []
+    searchWalk(root, q, type, results)
+    res.json({ results })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post("/api/refresh", (_, res) => {
+  refreshSeq++
+  fileCache.clear()
+  treeListCache.clear()
+  res.json({ ok: true, refreshSeq })
 })
 
 app.get("/api/projects", (req, res) => {
@@ -428,7 +612,12 @@ app.post("/api/open-project", (req, res) => {
 
 app.get("/api/tree", (req, res) => {
   try {
-    res.json(walk(getSessionRoot(req)))
+    const sessionRoot = getSessionRoot(req)
+    const targetDir = req.query.path
+      ? safeResolve(req.query.path as string, sessionRoot)
+      : sessionRoot
+    const offset = Math.max(0, parseInt(req.query.offset as string || "0", 10) || 0)
+    res.json(walkShallow(targetDir, offset))
   } catch (err: any) {
     console.error("[viewer:tree error]", err)
     res.json([])
@@ -470,6 +659,7 @@ const langMap: Record<string, string> = {
 }
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg"])
+const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".weba", ".wma", ".aiff", ".au"])
 
 app.get("/api/file", async (req, res) => {
   try {
@@ -480,6 +670,18 @@ app.get("/api/file", async (req, res) => {
     if (ext === ".pdf") {
       return res.json({ type: "pdf", raw: "", rendered: "", url: rawPath })
     }
+
+    if (IMAGE_EXTENSIONS.has(ext)) {
+      return res.json({ type: "image", raw: "", url: rawPath })
+    }
+
+    if (AUDIO_EXTENSIONS.has(ext)) {
+      return res.json({ type: "audio", raw: "", url: rawPath })
+    }
+
+    // Serve from cache if file unchanged (mtime + size match)
+    const cached = getFileCache(file)
+    if (cached) return res.json(cached)
 
     const raw = fs.readFileSync(file, "utf8")
 
@@ -511,7 +713,9 @@ app.get("/api/file", async (req, res) => {
         }
       }
 
-      return res.json({ type: "markdown", raw, rendered, highlightedRaw, symbols })
+      const result = { type: "markdown", raw, rendered, highlightedRaw, symbols }
+      setFileCache(file, result)
+      return res.json(result)
     }
 
     if (ext === ".html") {
@@ -520,7 +724,9 @@ app.get("/api/file", async (req, res) => {
         ? shikiHtml(activeHighlighter, raw, "html")
         : `<pre><code>${escapeHtml(raw)}</code></pre>`
 
-      return res.json({ type: "html", raw, rendered: raw, highlightedRaw, url: rawPath })
+      const result = { type: "html", raw, rendered: raw, highlightedRaw, url: rawPath }
+      setFileCache(file, result)
+      return res.json(result)
     }
 
     if (ext === ".puml") {
@@ -530,13 +736,9 @@ app.get("/api/file", async (req, res) => {
         : `<pre><code>${escapeHtml(raw)}</code></pre>`
 
       const encoded = encodePlantUml(raw)
-      return res.json({
-        type: "plantuml",
-        raw,
-        rendered: "",
-        highlightedRaw,
-        url: `/api/plantuml/${encoded}`,
-      })
+      const result = { type: "plantuml", raw, rendered: "", highlightedRaw, url: `/api/plantuml/${encoded}` }
+      setFileCache(file, result)
+      return res.json(result)
     }
 
     if (ext === ".mmd") {
@@ -545,16 +747,9 @@ app.get("/api/file", async (req, res) => {
         ? shikiHtml(activeHighlighter, raw, "plaintext")
         : `<pre><code>${escapeHtml(raw)}</code></pre>`
 
-      return res.json({
-        type: "mermaid",
-        raw,
-        rendered: `<pre class="language-mermaid">\n${escapeHtml(raw)}\n</pre>`,
-        highlightedRaw,
-      })
-    }
-
-    if (IMAGE_EXTENSIONS.has(ext)) {
-      return res.json({ type: "image", raw: "", url: rawPath })
+      const result = { type: "mermaid", raw, rendered: `<pre class="language-mermaid">\n${escapeHtml(raw)}\n</pre>`, highlightedRaw }
+      setFileCache(file, result)
+      return res.json(result)
     }
 
     const lang = langMap[ext]
@@ -563,12 +758,18 @@ app.get("/api/file", async (req, res) => {
       if (activeHighlighter) {
         const rendered = shikiHtml(activeHighlighter, raw, lang)
         const symbols = extractSymbols(raw, lang)
-        return res.json({ type: "code", raw, rendered, symbols })
+        const result = { type: "code", raw, rendered, symbols }
+        setFileCache(file, result)
+        return res.json(result)
       }
-      return res.json({ type: "code", raw, rendered: `<pre><code>${escapeHtml(raw)}</code></pre>` })
+      const result = { type: "code", raw, rendered: `<pre><code>${escapeHtml(raw)}</code></pre>` }
+      setFileCache(file, result)
+      return res.json(result)
     }
 
-    return res.json({ type: "text", raw, rendered: `<pre>${escapeHtml(raw)}</pre>` })
+    const result = { type: "text", raw, rendered: `<pre>${escapeHtml(raw)}</pre>` }
+    setFileCache(file, result)
+    return res.json(result)
   } catch (err: any) {
     res.status(403).json({ error: err.message })
   }
@@ -627,6 +828,121 @@ app.get("/api/raw", (req, res) => {
   }
 })
 
+// Known label/abbreviation prefixes — period after these is NOT a sentence end
+const ABBREV_PREFIX = /\b(Dr|Mr|Mrs|Ms|Prof|Fig|Figs|Table|Tab|Eq|Eqs|Sec|Ref|Refs|et al|e\.g|i\.e|vs|etc|cf|approx|dept|vol|no|pp|op|cit|ibid|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec|[A-Z]{2,6})\s*$/
+
+// Returns true only when the token immediately before '.' is a real word ending
+function isFalseDot(textBeforeDot: string): boolean {
+  const token = (textBeforeDot.match(/(\S+)\s*$/) || [])[1] || ""
+  // Roman numerals: I II III IV V VI VII VIII IX X XI XII ...
+  if (/^M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$/i.test(token) && token.length <= 6) return true
+  // Single letter (section/list marker like "A.", "B.", "a.")
+  if (/^[A-Za-z]$/.test(token)) return true
+  // Pure number or dotted number (1. 1.2. 3.4.1.)
+  if (/^\d+(\.\d+)*$/.test(token)) return true
+  // Known abbreviation prefix
+  if (ABBREV_PREFIX.test(textBeforeDot)) return true
+  return false
+}
+
+// Split accumulated text at true sentence boundaries
+function splitAtSentences(text: string): string[] {
+  // Match [.!?] optionally followed by quote, then whitespace + uppercase/digit/quote
+  const re = /([.!?]['"»]?)(\s+)(?=[A-Z\d"«‘“])/g
+  const parts: string[] = []
+  let last = 0
+  let m: RegExpExecArray | null
+
+  while ((m = re.exec(text)) !== null) {
+    const dotEnd = m.index + m[1].length
+    const before = text.slice(0, m.index + m[1].length - /* the punct char */ 1 + 1)
+    if (!isFalseDot(text.slice(0, m.index))) {
+      parts.push(text.slice(last, dotEnd).trim())
+      last = dotEnd + m[2].length
+      re.lastIndex = last
+    }
+  }
+  if (last < text.length) parts.push(text.slice(last).trim())
+  return parts.filter(p => p.length > 0)
+}
+
+function reconstructSentences(lines: string[]): string[] {
+  const out: string[] = []
+  let cur = ""
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      if (cur.trim()) { out.push(...splitAtSentences(cur)); cur = "" }
+      continue
+    }
+    // De-hyphenate: "train-" + "ing ..." → "training ..."
+    if (cur.endsWith("-") && /^[a-z]/.test(line)) {
+      cur = cur.slice(0, -1) + line
+    } else {
+      cur += (cur ? " " : "") + line
+    }
+  }
+  if (cur.trim()) out.push(...splitAtSentences(cur))
+  return out.filter(s => s.length > 0)
+}
+
+async function extractPdfSegments(buffer: Buffer): Promise<{ segments: { text: string; page: number }[]; numpages: number }> {
+  const doc = await pdfjsLib.getDocument({
+    data: new Uint8Array(buffer),
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    useSystemFonts: true,
+    disableFontFace: true,
+  }).promise
+
+  const allSegments: { text: string; page: number }[] = []
+
+  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    const page = await doc.getPage(pageNum)
+    const content = await page.getTextContent({ includeMarkedContent: false })
+    const items: any[] = (content.items as any[]).filter((it: any) => typeof it.str === "string" && it.str.trim())
+
+    items.sort((a: any, b: any) => {
+      const dy = b.transform[5] - a.transform[5]
+      if (Math.abs(dy) > 3) return dy
+      return a.transform[4] - b.transform[4]
+    })
+
+    // group items into lines by Y proximity
+    const lines: string[] = []
+    let curLine = ""
+    let lastY: number | null = null
+
+    for (const item of items) {
+      const y = item.transform[5]
+      if (lastY !== null && Math.abs(y - lastY) > 3) {
+        if (curLine.trim()) lines.push(curLine.trim())
+        curLine = item.str
+      } else {
+        curLine += (curLine && !curLine.endsWith(" ") && !item.str.startsWith(" ") ? " " : "") + item.str
+      }
+      lastY = y
+    }
+    if (curLine.trim()) lines.push(curLine.trim())
+
+    // Reconstruct sentences: de-hyphenate, join continuation lines, split at real sentence ends
+    const sentences = reconstructSentences(lines)
+    // Group sentences into translation chunks (~3 sentences or ~400 chars each)
+    let chunk = ""
+    for (const sent of sentences) {
+      if (chunk && chunk.length + sent.length > 400) {
+        allSegments.push({ text: chunk.trim(), page: pageNum })
+        chunk = sent
+      } else {
+        chunk += (chunk ? " " : "") + sent
+      }
+    }
+    if (chunk.trim()) allSegments.push({ text: chunk.trim(), page: pageNum })
+  }
+
+  return { segments: allSegments, numpages: doc.numPages }
+}
+
 function isMathSegment(text: string): boolean {
   if (text.length < 3) return false
   if (/[∫∑∏∂∇±×÷≤≥≠≈∞√∈∉⊂⊃∪∩αβγδεζηθλμνξπρστυφχψω]/.test(text)) return true
@@ -643,30 +959,18 @@ app.get("/api/pdf-text", async (req, res) => {
       return res.status(400).json({ error: "Not a PDF" })
     }
     const buffer = fs.readFileSync(file)
-    const data = await pdfParse(buffer, { max: 0 })
-    const rawText = data.text || ""
 
-    if (!rawText.trim()) {
-      return res.json({ segments: [], empty: true, pages: data.numpages })
+    const { segments: rawSegments, numpages } = await extractPdfSegments(buffer)
+
+    if (!rawSegments.length) {
+      return res.json({ segments: [], empty: true, pages: numpages })
     }
 
-    const paragraphs: string[] = []
-    let current = ""
-    for (const line of rawText.split("\n")) {
-      const trimmed = line.trim()
-      if (!trimmed) {
-        if (current.trim()) { paragraphs.push(current.trim()); current = "" }
-      } else {
-        current += (current ? " " : "") + trimmed
-      }
-    }
-    if (current.trim()) paragraphs.push(current.trim())
+    const segments = rawSegments
+      .filter(s => s.text.length > 1)
+      .map(s => ({ text: s.text, isMath: isMathSegment(s.text), page: s.page }))
 
-    const segments = paragraphs
-      .filter(p => p.length > 1)
-      .map(text => ({ text, isMath: isMathSegment(text) }))
-
-    res.json({ segments, empty: false, pages: data.numpages })
+    res.json({ segments, empty: false, pages: numpages })
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }
@@ -752,6 +1056,98 @@ function mkContainer(type: string, defaultTitle: string) {
 function escapeHtml(text: string) {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 }
+
+app.get("/api/notes/project", (req, res) => {
+  const sessionRoot = getSessionRoot(req)
+  if (!sessionRoot) return res.json({ content: null })
+  const notePath = path.join(sessionRoot, ".notes", "PROJECT.md")
+  try {
+    if (!fs.existsSync(notePath)) return res.json({ content: null })
+    res.json({ content: fs.readFileSync(notePath, "utf8") })
+  } catch (err: any) {
+    res.status(403).json({ error: err.message })
+  }
+})
+
+app.post("/api/notes/project", (req, res) => {
+  const sessionRoot = getSessionRoot(req)
+  if (!sessionRoot) return res.status(400).json({ error: "no project root" })
+  const { content } = req.body as { content?: string }
+  if (typeof content !== "string") return res.status(400).json({ error: "content required" })
+  const notePath = path.join(sessionRoot, ".notes", "PROJECT.md")
+  try {
+    if (!content.trim()) {
+      try { fs.unlinkSync(notePath) } catch {}
+      return res.json({ ok: true, deleted: true })
+    }
+    fs.mkdirSync(path.dirname(notePath), { recursive: true })
+    fs.writeFileSync(notePath, content, "utf8")
+    res.json({ ok: true })
+  } catch (err: any) {
+    res.status(403).json({ error: err.message })
+  }
+})
+
+app.delete("/api/notes/project", (req, res) => {
+  const sessionRoot = getSessionRoot(req)
+  if (!sessionRoot) return res.status(400).json({ error: "no project root" })
+  const notePath = path.join(sessionRoot, ".notes", "PROJECT.md")
+  try { fs.unlinkSync(notePath) } catch {}
+  res.json({ ok: true })
+})
+
+app.post("/api/render-markdown", async (req, res) => {
+  try {
+    const { content } = req.body as { content?: string }
+    if (typeof content !== "string") return res.status(400).json({ error: "content required" })
+    const md = await getMdShiki()
+    res.json({ html: md.render(content) })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get("/api/notes", (req, res) => {
+  try {
+    const sessionRoot = getSessionRoot(req)
+    const notePath = safeNoteResolve(req.query.path as string, sessionRoot)
+    if (!fs.existsSync(notePath)) return res.json({ content: null })
+    res.json({ content: fs.readFileSync(notePath, "utf8") })
+  } catch (err: any) {
+    res.status(403).json({ error: err.message })
+  }
+})
+
+app.post("/api/notes", (req, res) => {
+  try {
+    const sessionRoot = getSessionRoot(req)
+    const { path: filePath, content } = req.body as { path?: string; content?: string }
+    if (typeof filePath !== "string" || typeof content !== "string") {
+      return res.status(400).json({ error: "path and content required" })
+    }
+    const notePath = safeNoteResolve(filePath, sessionRoot)
+    if (!content.trim()) {
+      try { fs.unlinkSync(notePath) } catch {}
+      return res.json({ ok: true, deleted: true })
+    }
+    fs.mkdirSync(path.dirname(notePath), { recursive: true })
+    fs.writeFileSync(notePath, content, "utf8")
+    res.json({ ok: true })
+  } catch (err: any) {
+    res.status(403).json({ error: err.message })
+  }
+})
+
+app.delete("/api/notes", (req, res) => {
+  try {
+    const sessionRoot = getSessionRoot(req)
+    const notePath = safeNoteResolve(req.query.path as string, sessionRoot)
+    try { fs.unlinkSync(notePath) } catch {}
+    res.json({ ok: true })
+  } catch (err: any) {
+    res.status(403).json({ error: err.message })
+  }
+})
 
 app.use(express.static(DIST_DIR, { etag: true, lastModified: true }))
 

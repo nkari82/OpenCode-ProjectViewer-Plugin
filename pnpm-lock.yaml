@@ -93,6 +93,9 @@ importers:
       pdf-parse:
         specifier: ^2.4.5
         version: 2.4.5
+      pdfjs-dist:
+        specifier: ^5.7.284
+        version: 5.7.284
       shiki:
         specifier: ^1.29.2
         version: 1.29.2

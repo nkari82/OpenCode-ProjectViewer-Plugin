@@ -10,7 +10,6 @@ import {
 import DOMPurify from "dompurify"
 import mermaid from "mermaid"
 import * as pdfjsLib from "pdfjs-dist"
-
 import "./styles.css"
 import "katex/dist/katex.min.css"
 
@@ -67,14 +66,19 @@ const SESSION_ID = (() => {
   }
 })()
 
-async function fetchJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+async function fetchJson<T>(url: string, init: RequestInit = {}, signal?: AbortSignal): Promise<T> {
+  const timeoutController = new AbortController()
+  const timer = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS)
+
+  // Combine caller's signal with the timeout signal
+  const combined = signal
+    ? AbortSignal.any([signal, timeoutController.signal])
+    : timeoutController.signal
 
   try {
     const headers = new Headers(init.headers as HeadersInit)
     headers.set("X-Session-Id", SESSION_ID)
-    const response = await fetch(url, { ...init, headers, signal: controller.signal })
+    const response = await fetch(url, { ...init, headers, signal: combined })
     if (!response.ok) {
       throw new Error(`${url} failed (${response.status})`)
     }
@@ -84,11 +88,21 @@ async function fetchJson<T>(url: string, init: RequestInit = {}): Promise<T> {
   }
 }
 
+interface SearchResult {
+  path: string
+  name: string
+  dir: string
+  matches?: { line: number; text: string }[]
+}
+
 interface TreeNode {
   type: "dir" | "file"
   name: string
   path: string
-  children?: TreeNode[]
+  truncated?: true
+  total?: number
+  offset?: number
+  parentPath?: string
 }
 
 interface Project {
@@ -111,7 +125,9 @@ const ALLOWED_EXTENSIONS = new Set([
   ".txt", ".log",
   ".env", ".gitignore", ".dockerignore",
   ".mmd", ".puml", ".html", ".pdf",
-  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".avif", ".svg", ".mp3", ".mp4", ".avi", ".mkv",
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".avif", ".svg",
+  ".wav", ".mp3", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".weba", ".wma", ".aiff", ".au",
+  ".mp4", ".avi", ".mkv",
 ])
 
 function getFileCategory(fileName: string) {
@@ -131,7 +147,8 @@ function getFileCategory(fileName: string) {
   if (!ALLOWED_EXTENSIONS.has(ext)) return "unknown"
 
   if ([".md", ".markdown", ".mmd", ".puml", ".html"].includes(ext)) return "renderable"
-  if ([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".avif", ".ico", ".svg", ".mp3", ".mp4", ".avi", ".mkv"].includes(ext)) return "media"
+  if ([".wav", ".mp3", ".ogg", ".flac", ".aac", ".m4a", ".opus", ".weba", ".wma", ".aiff", ".au"].includes(ext)) return "audio"
+  if ([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".avif", ".ico", ".svg", ".mp4", ".avi", ".mkv"].includes(ext)) return "media"
   return "text"
 }
 
@@ -151,162 +168,230 @@ const LANG_OPTIONS = [
   { value: "ru", label: "Русский" },
 ]
 
-interface PdfLine {
+interface PdfSegment {
   text: string
-  x: number
-  y: number
-  w: number
-  h: number
   isMath: boolean
+  page: number
 }
 
-function clientIsMath(text: string, fontName?: string): boolean {
-  if (!text.trim() || text.trim().length < 2) return true
-  const fn = (fontName || "").toLowerCase()
-  if (fn.includes("math") || fn.includes("symbol") || fn.startsWith("cmmi") || fn.startsWith("cmex")) return true
-  if (/[∫∑∏∂∇±×÷≤≥≠≈∞√∈∉⊂⊃∪∩αβγδεζηθλμνξπρστυφχψω°]/.test(text)) return true
-  if (/\\[a-zA-Z]+/.test(text)) return true
-  const nonWord = (text.match(/[^a-zA-ZÀ-￿\s]/g) || []).length
-  return text.length > 0 && nonWord / text.length > 0.6
+function useMobile() {
+  const [mobile, setMobile] = useState(() => window.innerWidth <= 768)
+  useEffect(() => {
+    const handler = () => setMobile(window.innerWidth <= 768)
+    window.addEventListener("resize", handler)
+    return () => window.removeEventListener("resize", handler)
+  }, [])
+  return mobile
 }
 
-function extractPdfLines(items: any[], scale: number, vpHeight: number): PdfLine[] {
-  const mapped = items
-    .filter(it => it.str?.trim())
-    .map(it => {
-      const [a, , , , e, f] = it.transform as number[]
-      const fh = Math.abs(a) * scale
-      return { str: it.str as string, fontName: it.fontName as string, sx: e * scale, sy: vpHeight - f * scale - fh, sw: (it.width as number) * scale, sh: fh || 10 }
-    })
-
-  if (!mapped.length) return []
-  mapped.sort((a, b) => a.sy - b.sy || a.sx - b.sx)
-
-  const groups: typeof mapped[] = []
-  let cur: typeof mapped = []
-  let refY = mapped[0].sy
-
-  for (const s of mapped) {
-    if (cur.length && Math.abs(s.sy - refY) > 5) { groups.push(cur); cur = [s]; refY = s.sy }
-    else { cur.push(s); refY = (refY + s.sy) / 2 }
-  }
-  if (cur.length) groups.push(cur)
-
-  return groups.map(g => {
-    const text = g.map(s => s.str).join("").trim()
-    return {
-      text,
-      x: Math.min(...g.map(s => s.sx)),
-      y: Math.min(...g.map(s => s.sy)),
-      w: Math.max(...g.map(s => s.sx + s.sw)) - Math.min(...g.map(s => s.sx)) + 4,
-      h: Math.max(...g.map(s => s.sy + s.sh)) - Math.min(...g.map(s => s.sy)) + 2,
-      isMath: clientIsMath(text, g[0].fontName),
-    }
-  }).filter(l => l.text.length > 0)
-}
-
-function PdfPageView({ pdfPage, scale, translateOn, targetLang }: { pdfPage: any; scale: number; translateOn: boolean; targetLang: string }) {
+function PdfPageCanvas({ pdfPage, scale }: { pdfPage: any; scale: number }) {
+  const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const maskRef = useRef<HTMLCanvasElement>(null)
-  const [lines, setLines] = useState<PdfLine[]>([])
-  const [translations, setTranslations] = useState<Record<number, string>>({})
-  const [vpH, setVpH] = useState(0)
-  const runRef = useRef("")
+  const [shouldRender, setShouldRender] = useState(false)
+  const vp = useMemo(() => pdfPage.getViewport({ scale }), [pdfPage, scale])
+
+  // Trigger render only when page enters viewport (+ 400px margin)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    if (shouldRender) return
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) setShouldRender(true) },
+      { rootMargin: "400px" },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [shouldRender])
 
   useEffect(() => {
-    const vp = pdfPage.getViewport({ scale })
-    setVpH(vp.height)
-    const canvas = canvasRef.current!
+    if (!shouldRender) return
+    const canvas = canvasRef.current
+    if (!canvas) return
     canvas.width = vp.width
     canvas.height = vp.height
     const task = pdfPage.render({ canvasContext: canvas.getContext("2d")!, viewport: vp })
     task.promise.catch(() => {})
     return () => { try { task.cancel() } catch {} }
-  }, [pdfPage, scale])
-
-  useEffect(() => {
-    if (!vpH) return
-    pdfPage.getTextContent().then((tc: any) => {
-      setLines(extractPdfLines(tc.items || [], scale, vpH))
-      setTranslations({})
-      runRef.current = ""
-    })
-  }, [pdfPage, scale, vpH])
-
-  // Draw white mask over non-math text areas to hide original text
-  useEffect(() => {
-    const mask = maskRef.current
-    if (!mask || !vpH) return
-    const vp = pdfPage.getViewport({ scale })
-    mask.width = vp.width
-    mask.height = vp.height
-    const ctx = mask.getContext("2d")!
-    ctx.clearRect(0, 0, mask.width, mask.height)
-    if (!translateOn || !lines.length) return
-    ctx.fillStyle = "#ffffff"
-    for (const line of lines) {
-      if (!line.isMath) ctx.fillRect(line.x - 1, line.y - 1, line.w + 2, line.h + 2)
-    }
-  }, [translateOn, lines, pdfPage, scale, vpH])
-
-  useEffect(() => {
-    const key = `${translateOn ? 1 : 0}-${targetLang}`
-    if (runRef.current === key) return
-    runRef.current = key
-    if (!translateOn || !lines.length) { setTranslations({}); return }
-
-    let cancelled = false
-    setTranslations({})
-    ;(async () => {
-      for (let i = 0; i < lines.length; i++) {
-        if (cancelled) break
-        if (lines[i].isMath) continue
-        try {
-          const r = await fetch("/api/translate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
-            body: JSON.stringify({ text: lines[i].text, from: "auto", to: targetLang }),
-          })
-          if (cancelled) break
-          const d: any = await r.json()
-          setTranslations(prev => ({ ...prev, [i]: d.translated || lines[i].text }))
-        } catch {}
-      }
-    })()
-    return () => { cancelled = true }
-  }, [translateOn, targetLang, lines])
+  }, [shouldRender, pdfPage, vp])
 
   return (
-    <div style={{ position: "relative", display: "inline-block", lineHeight: 0, marginBottom: 8 }}>
-      <canvas ref={canvasRef} />
-      <canvas ref={maskRef} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }} />
-      {translateOn && lines.map((line, i) =>
-        !line.isMath ? (
-          <div
-            key={i}
-            className="pdf-overlay-block"
-            style={{ left: line.x, top: line.y, width: line.w, minHeight: line.h, fontSize: Math.max(line.h * 0.78, 7) }}
-          >
-            {translations[i] !== undefined
-              ? translations[i]
-              : <span className="pdf-overlay-pending" />}
-          </div>
-        ) : null
+    <div ref={containerRef} style={{ width: vp.width, height: vp.height, flexShrink: 0 }}>
+      {shouldRender && (
+        <canvas ref={canvasRef} style={{ display: "block", boxShadow: "0 2px 12px rgba(0,0,0,0.6)" }} />
       )}
     </div>
   )
 }
 
-function PdfJsViewer({ url, title }: { url: string; title: string; filePath: string }) {
+function formatTime(s: number): string {
+  if (!isFinite(s)) return "0:00"
+  const m = Math.floor(s / 60)
+  const sec = Math.floor(s % 60)
+  return `${m}:${sec.toString().padStart(2, "0")}`
+}
+
+function AudioPlayer({ url, title }: { url: string; title: string }) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [playing, setPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [volume, setVolume] = useState(1)
+  const [waveform, setWaveform] = useState<Float32Array | null>(null)
+  const rafRef = useRef(0)
+
+  const ext = title.split(".").pop()?.toUpperCase() ?? ""
+
+  // Decode audio and build peak waveform
+  useEffect(() => {
+    let cancelled = false
+    fetch(url, { headers: { "X-Session-Id": SESSION_ID } })
+      .then(r => r.arrayBuffer())
+      .then(buf => {
+        if (cancelled) return null
+        return new AudioContext().decodeAudioData(buf)
+      })
+      .then(decoded => {
+        if (!decoded || cancelled) return
+        const data = decoded.getChannelData(0)
+        const buckets = 900
+        const step = Math.max(1, Math.floor(data.length / buckets))
+        const peaks = new Float32Array(buckets)
+        for (let i = 0; i < buckets; i++) {
+          let max = 0
+          for (let j = 0; j < step; j++) {
+            const v = Math.abs(data[i * step + j] ?? 0)
+            if (v > max) max = v
+          }
+          peaks[i] = max
+        }
+        if (!cancelled) setWaveform(peaks)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [url])
+
+  // Draw waveform on canvas
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext("2d")!
+    const W = canvas.width
+    const H = canvas.height
+    ctx.clearRect(0, 0, W, H)
+
+    if (!waveform) {
+      ctx.fillStyle = "#21262d"
+      ctx.fillRect(0, H / 2 - 1, W, 2)
+      return
+    }
+
+    const playedFrac = duration > 0 ? currentTime / duration : 0
+    const playedX = Math.floor(W * playedFrac)
+    const barW = W / waveform.length
+
+    for (let i = 0; i < waveform.length; i++) {
+      const x = i * barW
+      const h = Math.max(2, waveform[i] * H * 0.88)
+      const y = (H - h) / 2
+      ctx.fillStyle = x < playedX ? "#3b82f6" : "#30363d"
+      ctx.fillRect(x + 0.5, y, Math.max(1, barW - 1), h)
+    }
+
+    // Playhead line
+    if (playedX > 0) {
+      ctx.fillStyle = "#60a5fa"
+      ctx.fillRect(playedX - 1, 0, 2, H)
+    }
+  }, [waveform, currentTime, duration])
+
+  // RAF loop for smooth playhead during playback
+  useEffect(() => {
+    if (!playing) return
+    const tick = () => {
+      if (audioRef.current) setCurrentTime(audioRef.current.currentTime)
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafRef.current)
+  }, [playing])
+
+  const togglePlay = () => {
+    const audio = audioRef.current
+    if (!audio) return
+    if (playing) { audio.pause(); setPlaying(false) }
+    else { void audio.play(); setPlaying(true) }
+  }
+
+  const seekByClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current
+    const audio = audioRef.current
+    if (!canvas || !audio || !duration) return
+    const rect = canvas.getBoundingClientRect()
+    audio.currentTime = ((e.clientX - rect.left) / rect.width) * duration
+    setCurrentTime(audio.currentTime)
+  }
+
+  return (
+    <div className="audio-player">
+      <audio
+        ref={audioRef}
+        src={url}
+        onLoadedMetadata={() => audioRef.current && setDuration(audioRef.current.duration)}
+        onEnded={() => setPlaying(false)}
+      />
+      <div className="audio-header">
+        <span className="audio-note">♪</span>
+        <span className="audio-title">{title}</span>
+        <span className="audio-badge">{ext}</span>
+      </div>
+      <canvas ref={canvasRef} className="audio-waveform" width={900} height={88} onClick={seekByClick} />
+      <div className="audio-controls">
+        <button className="audio-play-btn" onClick={togglePlay} aria-label={playing ? "일시정지" : "재생"}>
+          {playing ? "⏸" : "▶"}
+        </button>
+        <span className="audio-time">{formatTime(currentTime)}</span>
+        <input
+          type="range" className="audio-seek" min={0} max={duration || 1} step={0.01} value={currentTime}
+          onChange={e => {
+            const t = Number(e.target.value)
+            if (audioRef.current) audioRef.current.currentTime = t
+            setCurrentTime(t)
+          }}
+        />
+        <span className="audio-time">{formatTime(duration)}</span>
+        <span className="audio-vol-icon">{volume === 0 ? "🔇" : "🔊"}</span>
+        <input
+          type="range" className="audio-vol" min={0} max={1} step={0.01} value={volume}
+          onChange={e => {
+            const v = Number(e.target.value)
+            if (audioRef.current) audioRef.current.volume = v
+            setVolume(v)
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
+
+function PdfViewer({ url, title, filePath }: { url: string; title: string; filePath: string }) {
   const [pages, setPages] = useState<any[]>([])
   const [scale, setScale] = useState(1.5)
+  const [loadError, setLoadError] = useState("")
   const [translateOn, setTranslateOn] = useState(false)
   const [targetLang, setTargetLang] = useState("ko")
-  const [loadError, setLoadError] = useState("")
+  const [activeTab, setActiveTab] = useState<"pdf" | "trans">("pdf")
+  const [segments, setSegments] = useState<PdfSegment[]>([])
+  const [translations, setTranslations] = useState<Record<number, string>>({})
+  const [loading, setLoading] = useState(false)
+  const [fetchError, setFetchError] = useState("")
+  const runRef = useRef("")
+  const isMobile = useMobile()
 
+  // Load PDF pages
   useEffect(() => {
-    setPages([])
-    setLoadError("")
+    setPages([]); setLoadError("")
     const task = pdfjsLib.getDocument({ url })
     task.promise
       .then(async doc => {
@@ -318,26 +403,158 @@ function PdfJsViewer({ url, title }: { url: string; title: string; filePath: str
     return () => { task.destroy() }
   }, [url])
 
-  return (
-    <div className="pdfjs-viewer">
-      <div className="pdf-viewer-controls">
-        <button className="toolbar-btn" onClick={() => setScale(s => Math.max(0.5, s - 0.25))}>−</button>
-        <span style={{ fontSize: 13, color: "#8b949e", minWidth: 48, textAlign: "center" }}>{Math.round(scale * 100)}%</span>
-        <button className="toolbar-btn" onClick={() => setScale(s => Math.min(4, s + 0.25))}>+</button>
-        <span className="plantuml-controls-sep" />
-        <button className={`toolbar-btn${translateOn ? " active" : ""}`} onClick={() => setTranslateOn(v => !v)}>번역</button>
-        {translateOn && (
-          <select className="pdf-lang-select" value={targetLang} onChange={e => setTargetLang(e.target.value)}>
-            {LANG_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        )}
+  // Load segments
+  useEffect(() => {
+    if (!translateOn) { setSegments([]); setTranslations({}); return }
+    setLoading(true); setFetchError(""); setSegments([]); setTranslations({}); runRef.current = ""
+    fetch(`/api/pdf-text?path=${encodeURIComponent(filePath)}`, { headers: { "X-Session-Id": SESSION_ID } })
+      .then(async r => {
+        const data = await r.json()
+        if (!r.ok || data.error) throw new Error(data.error || `오류 ${r.status}`)
+        setSegments(data.segments || [])
+        setLoading(false)
+      })
+      .catch((e: any) => { setFetchError(e.message || "추출 실패"); setLoading(false) })
+  }, [translateOn, filePath])
+
+  // Translate
+  useEffect(() => {
+    if (!segments.length || !translateOn) return
+    const key = `${segments.length}-${targetLang}`
+    if (runRef.current === key) return
+    runRef.current = key
+    let cancelled = false
+    setTranslations({})
+    ;(async () => {
+      for (let i = 0; i < segments.length; i++) {
+        if (cancelled || segments[i].isMath) continue
+        try {
+          const r = await fetch("/api/translate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
+            body: JSON.stringify({ text: segments[i].text, from: "auto", to: targetLang }),
+          })
+          if (cancelled) break
+          const d: any = await r.json()
+          setTranslations(prev => ({ ...prev, [i]: d.translated || segments[i].text }))
+        } catch {}
+      }
+    })()
+    return () => { cancelled = true }
+  }, [segments, targetLang, translateOn])
+
+  // Group segments by page
+  const pageGroups = useMemo(() => {
+    const map = new Map<number, { idx: number; seg: PdfSegment }[]>()
+    segments.forEach((seg, idx) => {
+      if (!map.has(seg.page)) map.set(seg.page, [])
+      map.get(seg.page)!.push({ idx, seg })
+    })
+    return map
+  }, [segments])
+
+  const handleTranslateToggle = () => {
+    const next = !translateOn
+    setTranslateOn(next)
+    if (next && isMobile) setActiveTab("trans")
+    if (!next && isMobile) setActiveTab("pdf")
+  }
+
+  const controls = (
+    <div className="pdf-viewer-controls">
+      {isMobile && translateOn && (
+        <div className="pdf-tab-bar">
+          <button className={`pdf-tab${activeTab === "pdf" ? " active" : ""}`} onClick={() => setActiveTab("pdf")}>원본</button>
+          <button className={`pdf-tab${activeTab === "trans" ? " active" : ""}`} onClick={() => setActiveTab("trans")}>번역</button>
+        </div>
+      )}
+      <button className="toolbar-btn" onClick={() => setScale(s => Math.max(0.5, s - 0.25))}>−</button>
+      <span style={{ fontSize: 13, color: "#8b949e", minWidth: 40, textAlign: "center" }}>{Math.round(scale * 100)}%</span>
+      <button className="toolbar-btn" onClick={() => setScale(s => Math.min(4, s + 0.25))}>+</button>
+      <span className="plantuml-controls-sep" />
+      <button className={`toolbar-btn${translateOn ? " active" : ""}`} onClick={handleTranslateToggle}>번역</button>
+      {translateOn && (
+        <select className="pdf-lang-select" value={targetLang} onChange={e => { setTargetLang(e.target.value); runRef.current = "" }}>
+          {LANG_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      )}
+    </div>
+  )
+
+  const renderPageRows = (withTrans: boolean) => (
+    <>
+      {loadError && <div className="pdf-translate-error" style={{ padding: 16 }}>{loadError}</div>}
+      {!pages.length && !loadError && <div className="pdf-translate-status">로딩 중…</div>}
+      {pages.map((page, i) => {
+        const pageNum = i + 1
+        const items = pageGroups.get(pageNum) || []
+        return (
+          <div key={i} className={`pdf-row${withTrans ? " pdf-row--split" : ""}`}>
+            <div className="pdf-row-canvas">
+              <PdfPageCanvas pdfPage={page} scale={scale} />
+            </div>
+            {withTrans && (
+              <div className="pdf-row-trans">
+                {loading && pageNum === 1 && <div className="pdf-translate-status">텍스트 추출 중…</div>}
+                {fetchError && pageNum === 1 && <div className="pdf-translate-error">{fetchError}</div>}
+                {!loading && !fetchError && segments.length === 0 && pageNum === 1 && (
+                  <div className="pdf-translate-status">텍스트를 추출할 수 없습니다<br />(스캔된 PDF일 수 있습니다)</div>
+                )}
+                {items.map(({ idx, seg }) =>
+                  seg.isMath ? (
+                    <p key={idx} className="pdf-math-seg">{seg.text}</p>
+                  ) : (
+                    <p key={idx} className="pdf-trans-para">
+                      {translations[idx] !== undefined
+                        ? translations[idx]
+                        : <span className="pdf-trans-pending" />}
+                    </p>
+                  )
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </>
+  )
+
+  // Mobile: tabs
+  if (isMobile) {
+    return (
+      <div className="pdf-viewer">
+        {controls}
+        <div className="pdf-scroll-area">
+          {(!translateOn || activeTab === "pdf") && renderPageRows(false)}
+          {translateOn && activeTab === "trans" && (
+            <div className="pdf-mobile-trans">
+              {loading && <div className="pdf-translate-status">텍스트 추출 중…</div>}
+              {fetchError && <div className="pdf-translate-error">{fetchError}</div>}
+              {!loading && !fetchError && segments.length === 0 && (
+                <div className="pdf-translate-status">텍스트를 추출할 수 없습니다<br />(스캔된 PDF일 수 있습니다)</div>
+              )}
+              {segments.map((seg, i) =>
+                seg.isMath ? (
+                  <div key={i} className="pdf-math-seg" dangerouslySetInnerHTML={{ __html: renderMath(seg.text) }} />
+                ) : (
+                  <p key={i} className="pdf-trans-para">
+                    {translations[i] !== undefined ? translations[i] : <span className="pdf-trans-pending" />}
+                  </p>
+                )
+              )}
+            </div>
+          )}
+        </div>
       </div>
-      {loadError && <div className="pdf-translate-error" style={{ padding: "16px" }}>{loadError}</div>}
-      <div className="pdfjs-pages">
-        {!pages.length && !loadError && <div className="pdf-translate-status">로딩 중…</div>}
-        {pages.map((page, i) => (
-          <PdfPageView key={i} pdfPage={page} scale={scale} translateOn={translateOn} targetLang={targetLang} />
-        ))}
+    )
+  }
+
+  // Desktop: single scroll area, per-page rows [canvas | translation]
+  return (
+    <div className="pdf-viewer">
+      {controls}
+      <div className="pdf-scroll-area">
+        {renderPageRows(translateOn)}
       </div>
     </div>
   )
@@ -356,6 +573,10 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
   const [translate, setTranslate] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
   const dragStart = useRef({ x: 0, y: 0, tx: 0, ty: 0 })
+  const scaleRef = useRef(1)
+  const translateRef = useRef({ x: 0, y: 0 })
+  const pinchRef = useRef<{ dist: number; scale: number } | null>(null)
+  const touchPanRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
   const [showConfig, setShowConfig] = useState(false)
   const [serverUrl, setServerUrl] = useState("")
   const [serverUrlInput, setServerUrlInput] = useState("")
@@ -417,7 +638,7 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
   }, [])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 1) return
+    if (e.button !== 0 && e.button !== 1) return
     e.preventDefault()
     setDragging(true)
     dragStart.current = { x: e.clientX, y: e.clientY, tx: translate.x, ty: translate.y }
@@ -448,6 +669,60 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
       window.removeEventListener("mouseup", handleMouseUp)
     }
   }, [dragging, handleMouseMove, handleMouseUp])
+
+  // Keep refs in sync so touch handlers always see current values
+  useEffect(() => { scaleRef.current = scale }, [scale])
+  useEffect(() => { translateRef.current = translate }, [translate])
+
+  // Pinch-to-zoom + single-finger pan (non-passive to allow preventDefault)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const t1 = e.touches[0], t2 = e.touches[1]
+        pinchRef.current = {
+          dist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
+          scale: scaleRef.current,
+        }
+        touchPanRef.current = null
+      } else if (e.touches.length === 1) {
+        touchPanRef.current = {
+          x: e.touches[0].clientX, y: e.touches[0].clientY,
+          tx: translateRef.current.x, ty: translateRef.current.y,
+        }
+        pinchRef.current = null
+      }
+    }
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && pinchRef.current) {
+        e.preventDefault()
+        const t1 = e.touches[0], t2 = e.touches[1]
+        const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY)
+        const next = Math.max(0.1, Math.min(10, pinchRef.current.scale * (dist / pinchRef.current.dist)))
+        setScale(next)
+      } else if (e.touches.length === 1 && touchPanRef.current) {
+        e.preventDefault()
+        setTranslate({
+          x: touchPanRef.current.tx + (e.touches[0].clientX - touchPanRef.current.x),
+          y: touchPanRef.current.ty + (e.touches[0].clientY - touchPanRef.current.y),
+        })
+      }
+    }
+
+    const onTouchEnd = () => { pinchRef.current = null; touchPanRef.current = null }
+
+    el.addEventListener("touchstart", onTouchStart, { passive: false })
+    el.addEventListener("touchmove", onTouchMove, { passive: false })
+    el.addEventListener("touchend", onTouchEnd)
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart)
+      el.removeEventListener("touchmove", onTouchMove)
+      el.removeEventListener("touchend", onTouchEnd)
+    }
+  }, [])
 
   const resetView = useCallback(() => {
     setScale(1)
@@ -577,7 +852,7 @@ function PlantUmlViewer({ url, title }: PlantUmlViewerProps) {
         ref={containerRef}
         onWheel={handleWheel}
         onMouseDown={handleMouseDown}
-        style={{ cursor: dragging ? "grabbing" : "default" }}
+        style={dragging ? { cursor: "grabbing" } : undefined}
       >
         {!loaded && !error && (
           <div className="plantuml-loading">Loading diagram…</div>
@@ -722,11 +997,62 @@ export default function App() {
     return parts.at(-1) || root
   }, [root])
 
+  const [dirChildren, setDirChildren] = useState(new Map<string, TreeNode[]>())
+  const [searchQuery, setSearchQuery] = useState("")
+  const [searchType, setSearchType] = useState<"name" | "content">("name")
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [searching, setSearching] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const syncTokenRef = useRef(0)
   const rootRef = useRef(root)
   const checkRootPendingRef = useRef(false)
+  const fileCacheRef = useRef(new Map<string, FileData>())
+  const refreshSeqRef = useRef(-1)
+  const fileLoadAbortRef = useRef<AbortController | null>(null)
+  const [fileLoading, setFileLoading] = useState(false)
+  const [noteOpen, setNoteOpen] = useState(false)
+  const [noteContent, setNoteContent] = useState("")
+  const [noteRendered, setNoteRendered] = useState("")
+  const [noteEditing, setNoteEditing] = useState(true)
+  const [noteSaved, setNoteSaved] = useState(true)
+  const [notePos, setNotePos] = useState<{ x: number; y: number } | null>(null)
+  const [noteSize, setNoteSize] = useState({ w: 400, h: 440 })
+  const [projectNoteOpen, setProjectNoteOpen] = useState(false)
+  const [projectNoteContent, setProjectNoteContent] = useState("")
+  const [projectNoteRendered, setProjectNoteRendered] = useState("")
+  const [projectNoteEditing, setProjectNoteEditing] = useState(true)
+  const [projectNoteSaved, setProjectNoteSaved] = useState(true)
+  const [projectNoteHeight, setProjectNoteHeight] = useState(260)
+  const noteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const notePathRef = useRef("")
+  const projectNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const noteDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
+  const noteResizeRef = useRef<{ startX: number; startY: number; origW: number; origH: number; mode: string } | null>(null)
+  const projectNoteResizeRef = useRef<{ startY: number; origH: number } | null>(null)
+  const noteTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const projectNoteTextareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => { rootRef.current = root }, [root])
+
+  useEffect(() => {
+    if (!root) return
+    setProjectNoteContent("")
+    setProjectNoteRendered("")
+    setProjectNoteEditing(true)
+    setProjectNoteSaved(true)
+    void fetchJson<{ content: string | null }>("/api/notes/project")
+      .then(async data => {
+        const content = data.content ?? ""
+        setProjectNoteContent(content)
+        if (content) {
+          const html = await renderNoteMarkdown(content)
+          setProjectNoteRendered(html)
+          setProjectNoteEditing(false)
+        }
+      })
+      .catch(() => {})
+  }, [root])
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth <= 768)
@@ -761,6 +1087,54 @@ export default function App() {
     e.preventDefault()
   }
 
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (noteDragRef.current) {
+        const dx = e.clientX - noteDragRef.current.startX
+        const dy = e.clientY - noteDragRef.current.startY
+        setNotePos({
+          x: Math.max(0, Math.min(window.innerWidth - 280, noteDragRef.current.origX + dx)),
+          y: Math.max(0, Math.min(window.innerHeight - 48, noteDragRef.current.origY + dy)),
+        })
+      }
+      if (noteResizeRef.current) {
+        const { startX, startY, origW, origH, mode } = noteResizeRef.current
+        const dx = e.clientX - startX
+        const dy = e.clientY - startY
+        setNoteSize({
+          w: mode.includes("e") ? Math.max(280, Math.min(900, origW + dx)) : origW,
+          h: mode.includes("s") ? Math.max(200, Math.min(800, origH + dy)) : origH,
+        })
+      }
+      if (projectNoteResizeRef.current) {
+        const { startY, origH } = projectNoteResizeRef.current
+        setProjectNoteHeight(Math.max(120, Math.min(600, origH + (e.clientY - startY))))
+      }
+    }
+    const onUp = () => {
+      noteDragRef.current = null
+      noteResizeRef.current = null
+      projectNoteResizeRef.current = null
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+    return () => {
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+    }
+  }, [])
+
+  function startNoteDrag(e: React.MouseEvent) {
+    if (isMobile) return
+    noteDragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: notePos?.x ?? Math.max(0, window.innerWidth - 384),
+      origY: notePos?.y ?? Math.max(0, window.innerHeight - 364),
+    }
+    e.preventDefault()
+  }
+
   function relPath(full: string): string {
     if (!full) return ""
     const norm = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "")
@@ -782,18 +1156,68 @@ export default function App() {
       }
 
       setTree(data)
+      setDirChildren(new Map())
     } catch (err) {
       console.error("loadTree failed", err)
     }
+  }
+
+  async function loadDirChildren(dirPath: string) {
+    try {
+      const children = await fetchJson<TreeNode[]>(`/api/tree?path=${encodeURIComponent(dirPath)}`)
+      setDirChildren(prev => new Map(prev).set(dirPath, children))
+    } catch {
+      setDirChildren(prev => new Map(prev).set(dirPath, []))
+    }
+  }
+
+  function runSearch(q: string, type: "name" | "content") {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    if (!q.trim()) { setSearchResults([]); setSearching(false); return }
+    setSearching(true)
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const data = await fetchJson<{ results: SearchResult[] }>(
+          `/api/search?q=${encodeURIComponent(q)}&type=${type}`
+        )
+        setSearchResults(data.results)
+      } catch {}
+      setSearching(false)
+    }, 300)
+  }
+
+  async function loadMore(node: TreeNode) {
+    const parentPath = node.parentPath!
+    const offset = node.offset!
+    try {
+      const more = await fetchJson<TreeNode[]>(
+        `/api/tree?path=${encodeURIComponent(parentPath)}&offset=${offset}`
+      )
+      setDirChildren(prev => {
+        const current = prev.get(parentPath) ?? []
+        const withoutTruncated = current.filter(n => !n.truncated)
+        return new Map(prev).set(parentPath, [...withoutTruncated, ...more])
+      })
+    } catch {}
   }
 
   async function checkRoot() {
     if (checkRootPendingRef.current) return
     checkRootPendingRef.current = true
     try {
-      const data = await fetchJson<{ root: string }>("/api/root")
+      const data = await fetchJson<{ root: string; refreshSeq?: number }>("/api/root")
       const rootValue = data.root || ""
+      // Invalidate file cache when server signals files changed
+      if (data.refreshSeq !== undefined && data.refreshSeq !== refreshSeqRef.current) {
+        if (refreshSeqRef.current !== -1) {
+          fileCacheRef.current.clear()
+          setDirChildren(new Map())
+        }
+        refreshSeqRef.current = data.refreshSeq
+      }
       if (rootValue && rootValue !== rootRef.current) {
+        fileCacheRef.current.clear()
+        setDirChildren(new Map())
         setRoot(rootValue)
         setTitle("")
         setFileData(EMPTY_FILE_DATA)
@@ -805,6 +1229,196 @@ export default function App() {
       console.error("checkRoot failed", err)
     } finally {
       checkRootPendingRef.current = false
+    }
+  }
+
+  async function renderNoteMarkdown(content: string): Promise<string> {
+    try {
+      const resp = await fetch("/api/render-markdown", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      })
+      if (!resp.ok) throw new Error(`status ${resp.status}`)
+      const data = await resp.json()
+      return data.html ?? ""
+    } catch (err) {
+      console.error("[note render]", err)
+      return ""
+    }
+  }
+
+  async function loadNote(filePath: string) {
+    notePathRef.current = filePath
+    setNoteContent("")
+    setNoteRendered("")
+    setNoteEditing(true)
+    setNoteSaved(true)
+    try {
+      const data = await fetchJson<{ content: string | null }>(`/api/notes?path=${encodeURIComponent(filePath)}`)
+      const content = data.content ?? ""
+      setNoteContent(content)
+      if (content) {
+        const html = await renderNoteMarkdown(content)
+        setNoteRendered(html)
+        setNoteEditing(false)
+      }
+    } catch {}
+  }
+
+  async function openProjectNote() {
+    if (projectNoteOpen) { setProjectNoteOpen(false); return }
+    setProjectNoteContent("")
+    setProjectNoteRendered("")
+    setProjectNoteEditing(true)
+    setProjectNoteSaved(true)
+    setProjectNoteOpen(true)
+    try {
+      const data = await fetchJson<{ content: string | null }>("/api/notes/project")
+      const content = data.content ?? ""
+      setProjectNoteContent(content)
+      if (content) {
+        const html = await renderNoteMarkdown(content)
+        setProjectNoteRendered(html)
+        setProjectNoteEditing(false)
+      }
+    } catch {}
+  }
+
+  function scheduleNoteSave(value: string) {
+    setNoteSaved(false)
+    if (noteTimerRef.current) clearTimeout(noteTimerRef.current)
+    noteTimerRef.current = setTimeout(async () => {
+      try {
+        await fetch("/api/notes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
+          body: JSON.stringify({ path: notePathRef.current, content: value }),
+        })
+        setNoteSaved(true)
+      } catch {}
+    }, 800)
+  }
+
+  function scheduleProjectNoteSave(value: string) {
+    setProjectNoteSaved(false)
+    if (projectNoteTimerRef.current) clearTimeout(projectNoteTimerRef.current)
+    projectNoteTimerRef.current = setTimeout(async () => {
+      try {
+        await fetch("/api/notes/project", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
+          body: JSON.stringify({ content: value }),
+        })
+        setProjectNoteSaved(true)
+      } catch {}
+    }, 800)
+  }
+
+  async function saveAndPreview() {
+    if (noteTimerRef.current) clearTimeout(noteTimerRef.current)
+    try {
+      await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
+        body: JSON.stringify({ path: notePathRef.current, content: noteContent }),
+      })
+      setNoteSaved(true)
+    } catch {}
+    if (noteContent.trim()) {
+      const html = await renderNoteMarkdown(noteContent)
+      setNoteRendered(html)
+      setNoteEditing(false)
+    } else {
+      setNoteContent("")
+      setNoteEditing(true)
+    }
+  }
+
+  async function saveProjectNoteAndPreview() {
+    if (projectNoteTimerRef.current) clearTimeout(projectNoteTimerRef.current)
+    try {
+      await fetch("/api/notes/project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
+        body: JSON.stringify({ content: projectNoteContent }),
+      })
+      setProjectNoteSaved(true)
+    } catch {}
+    if (projectNoteContent.trim()) {
+      const html = await renderNoteMarkdown(projectNoteContent)
+      setProjectNoteRendered(html)
+      setProjectNoteEditing(false)
+    } else {
+      setProjectNoteContent("")
+      setProjectNoteEditing(true)
+    }
+  }
+
+  function insertMarkdown(before: string, after = "", placeholder = "") {
+    const ta = noteTextareaRef.current
+    if (!ta) return
+    const start = ta.selectionStart
+    const end = ta.selectionEnd
+    const selected = noteContent.slice(start, end) || placeholder
+    const newValue = noteContent.slice(0, start) + before + selected + after + noteContent.slice(end)
+    setNoteContent(newValue)
+    scheduleNoteSave(newValue)
+    setTimeout(() => {
+      ta.focus()
+      ta.setSelectionRange(start + before.length, start + before.length + selected.length)
+    }, 0)
+  }
+
+  function insertLinePrefix(prefix: string) {
+    const ta = noteTextareaRef.current
+    if (!ta) return
+    const start = ta.selectionStart
+    const lineStart = noteContent.lastIndexOf("\n", start - 1) + 1
+    // Toggle: remove prefix if already present, otherwise add
+    if (noteContent.slice(lineStart, lineStart + prefix.length) === prefix) {
+      const newValue = noteContent.slice(0, lineStart) + noteContent.slice(lineStart + prefix.length)
+      setNoteContent(newValue)
+      scheduleNoteSave(newValue)
+      setTimeout(() => { ta.focus(); ta.setSelectionRange(Math.max(lineStart, start - prefix.length), Math.max(lineStart, start - prefix.length)) }, 0)
+    } else {
+      const newValue = noteContent.slice(0, lineStart) + prefix + noteContent.slice(lineStart)
+      setNoteContent(newValue)
+      scheduleNoteSave(newValue)
+      setTimeout(() => { ta.focus(); ta.setSelectionRange(start + prefix.length, start + prefix.length) }, 0)
+    }
+  }
+
+  function insertProjectMarkdown(before: string, after = "", placeholder = "") {
+    const ta = projectNoteTextareaRef.current
+    if (!ta) return
+    const start = ta.selectionStart
+    const end = ta.selectionEnd
+    const selected = projectNoteContent.slice(start, end) || placeholder
+    const newValue = projectNoteContent.slice(0, start) + before + selected + after + projectNoteContent.slice(end)
+    setProjectNoteContent(newValue)
+    scheduleProjectNoteSave(newValue)
+    setTimeout(() => {
+      ta.focus()
+      ta.setSelectionRange(start + before.length, start + before.length + selected.length)
+    }, 0)
+  }
+
+  function insertProjectLinePrefix(prefix: string) {
+    const ta = projectNoteTextareaRef.current
+    if (!ta) return
+    const start = ta.selectionStart
+    const lineStart = projectNoteContent.lastIndexOf("\n", start - 1) + 1
+    if (projectNoteContent.slice(lineStart, lineStart + prefix.length) === prefix) {
+      const newValue = projectNoteContent.slice(0, lineStart) + projectNoteContent.slice(lineStart + prefix.length)
+      setProjectNoteContent(newValue)
+      scheduleProjectNoteSave(newValue)
+      setTimeout(() => { ta.focus(); ta.setSelectionRange(Math.max(lineStart, start - prefix.length), Math.max(lineStart, start - prefix.length)) }, 0)
+    } else {
+      const newValue = projectNoteContent.slice(0, lineStart) + prefix + projectNoteContent.slice(lineStart)
+      setProjectNoteContent(newValue)
+      scheduleProjectNoteSave(newValue)
+      setTimeout(() => { ta.focus(); ta.setSelectionRange(start + prefix.length, start + prefix.length) }, 0)
     }
   }
 
@@ -840,6 +1454,23 @@ export default function App() {
   }, [showProjectList])
 
   useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault()
+        setSidebarVisible(true)
+        setTimeout(() => searchInputRef.current?.focus(), 50)
+      }
+      if (e.key === "Escape" && document.activeElement === searchInputRef.current) {
+        setSearchQuery("")
+        setSearchResults([])
+        searchInputRef.current?.blur()
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [])
+
+  useEffect(() => {
     if (viewMode !== "render" || fileData.type !== "mermaid") return
 
     async function renderMermaid() {
@@ -863,17 +1494,42 @@ export default function App() {
   }, [fileData, viewMode])
 
   async function openFile(filePath: string, name: string) {
+    // Cancel any in-flight file load
+    fileLoadAbortRef.current?.abort()
+    const abortController = new AbortController()
+    fileLoadAbortRef.current = abortController
+
     setTitle(name)
     setCurrentPath(filePath)
+    void loadNote(filePath)
+
+    const cached = fileCacheRef.current.get(filePath)
+    if (cached) {
+      setFileData(cached)
+      setViewMode("render")
+      setFileLoading(false)
+      return
+    }
+
+    setFileLoading(true)
+    setFileData(EMPTY_FILE_DATA)
 
     try {
-      const data = await fetchJson<FileData>(`/api/file?path=${encodeURIComponent(filePath)}`)
+      const data = await fetchJson<FileData>(
+        `/api/file?path=${encodeURIComponent(filePath)}`,
+        {},
+        abortController.signal,
+      )
+      if (abortController.signal.aborted) return
+      fileCacheRef.current.set(filePath, data)
       setFileData(data)
       setViewMode("render")
-    } catch (err) {
-      console.error("openFile failed", err)
+    } catch (err: any) {
+      if (abortController.signal.aborted) return
       setFileData({ type: "text", raw: String(err), rendered: "" })
       setViewMode("text")
+    } finally {
+      if (!abortController.signal.aborted) setFileLoading(false)
     }
   }
 
@@ -884,6 +1540,7 @@ export default function App() {
         next.delete(dirPath)
       } else {
         next.add(dirPath)
+        if (!dirChildren.has(dirPath)) void loadDirChildren(dirPath)
       }
       return next
     })
@@ -891,9 +1548,21 @@ export default function App() {
 
   function render(nodes: TreeNode[]) {
     return nodes.map(node => {
-      const hasChildren = Array.isArray(node.children) && node.children.length > 0
+      if (node.truncated) {
+        return (
+          <div key={node.path} className="tree-item">
+            <button className="tree-load-more" onClick={() => void loadMore(node)}>
+              {node.name}
+            </button>
+          </div>
+        )
+      }
+
       const isDir = node.type === "dir"
       const isOpen = openDirs.has(node.path)
+      const children = dirChildren.get(node.path)
+      const isLoading = isDir && isOpen && children === undefined
+      const hasChildren = isDir && (children === undefined || children.length > 0)
       const isSelectable = isDir || isPreviewableFile(node.name)
 
       return (
@@ -910,15 +1579,13 @@ export default function App() {
                   return
                 }
                 if (!isSelectable) return
-                if (window.innerWidth <= 768) {
-                  setSidebarVisible(false)
-                }
+                if (window.innerWidth <= 768) setSidebarVisible(false)
                 openFile(node.path, node.name)
               }}
             >
               {isDir && (
                 <span className="tree-chevron">
-                  {hasChildren ? (isOpen ? "▼" : "▶") : "•"}
+                  {isLoading ? "…" : hasChildren ? (isOpen ? "▼" : "▶") : "•"}
                 </span>
               )}
               <span className="tree-icon">{isDir ? (isOpen ? "📂" : "📁") : "📄"}</span>
@@ -926,8 +1593,8 @@ export default function App() {
             </div>
           </div>
 
-          {hasChildren && isOpen && (
-            <div className="children">{render(node.children!)}</div>
+          {isOpen && children !== undefined && children.length > 0 && (
+            <div className="children">{render(children)}</div>
           )}
         </div>
       )
@@ -937,6 +1604,15 @@ export default function App() {
   const renderToggle = useMemo(() => getFileCategory(title) === "renderable", [title])
 
   function renderPreview() {
+    if (fileLoading) {
+      return (
+        <div className="file-loading">
+          <div className="file-loading-bar" />
+          <div className="file-loading-name">{title}</div>
+        </div>
+      )
+    }
+
     const cat = getFileCategory(title)
 
     if (viewMode === "render" && cat === "renderable") {
@@ -961,9 +1637,13 @@ export default function App() {
       )
     }
 
+    if (cat === "audio") {
+      return <AudioPlayer url={fileData.url!} title={title} />
+    }
+
     if (cat === "media") {
       if (fileData.type === "image") return <img src={fileData.url} alt={title} className="image-preview" />
-      if (fileData.type === "pdf") return <PdfJsViewer url={fileData.url!} title={title} filePath={currentPath} />
+      if (fileData.type === "pdf") return <PdfViewer url={fileData.url!} title={title} filePath={currentPath} />
       return <iframe src={fileData.url} className="viewer-frame" title={title} />
     }
 
@@ -1006,13 +1686,24 @@ export default function App() {
           </button>
           <div className="sidebar-title">OpenCode Viewer</div>
           <div className="project-header">
-            <div
-              className="project-name project-name-clickable"
-              onClick={() => setShowProjectList(!showProjectList)}
-              title="클릭하여 프로젝트 선택"
-            >
-              {projectName || "프로젝트 선택"}
-              <span className="project-arrow">{showProjectList ? "▲" : "▼"}</span>
+            <div className="project-header-row">
+              <div
+                className="project-name project-name-clickable"
+                onClick={() => setShowProjectList(!showProjectList)}
+                title="클릭하여 프로젝트 선택"
+              >
+                {projectName || "프로젝트 선택"}
+                <span className="project-arrow">{showProjectList ? "▲" : "▼"}</span>
+              </div>
+              {root && (
+                <button
+                  className={`project-note-btn${projectNoteOpen ? " active" : ""}`}
+                  onClick={() => void openProjectNote()}
+                  title="프로젝트 노트"
+                >
+                  📓
+                </button>
+              )}
             </div>
 
             {showProjectList && (
@@ -1057,6 +1748,8 @@ export default function App() {
                           setFileData(EMPTY_FILE_DATA)
                           setViewMode("render")
                           setOpenDirs(new Set())
+                          setDirChildren(new Map())
+                          fileCacheRef.current.clear()
                           await loadTree(resolvedRoot)
                         }
                       } catch (err) {
@@ -1076,7 +1769,114 @@ export default function App() {
             <div className="project-root">{root || "프로젝트 경로 없음"}</div>
           </div>
         </div>
-        <div className="sidebar-scrollable-tree">{render(tree)}</div>
+
+        {projectNoteOpen && (
+          <div className="sidebar-project-note" style={{ height: projectNoteHeight }}>
+            {projectNoteEditing ? (
+              <>
+                <div className="note-toolbar">
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("# ") }} title="제목 1">H1</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("## ") }} title="제목 2">H2</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("### ") }} title="제목 3">H3</button>
+                  <span className="note-toolbar-sep" />
+                  <button className="tb-bold" onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("**", "**", "굵게") }} title="굵게">B</button>
+                  <button className="tb-italic" onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("*", "*", "기울임") }} title="기울임">I</button>
+                  <button className="tb-strike" onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("~~", "~~", "취소선") }} title="취소선">S</button>
+                  <span className="note-toolbar-sep" />
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("`", "`", "코드") }} title="인라인 코드">{"<>"}</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("\n```\n", "\n```", "코드") }} title="코드 블록">{"```"}</button>
+                  <span className="note-toolbar-sep" />
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("- ") }} title="목록">•</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("1. ") }} title="번호 목록">1.</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("> ") }} title="인용">❝</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("- [ ] ") }} title="체크 항목">☑</button>
+                  <span className="note-toolbar-sep" />
+                  <button onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("[", "](url)", "링크") }} title="링크">🔗</button>
+                </div>
+                <textarea
+                  ref={projectNoteTextareaRef}
+                  className="note-textarea"
+                  placeholder="프로젝트 메모를 Markdown으로 작성하세요…"
+                  value={projectNoteContent}
+                  onChange={e => { setProjectNoteContent(e.target.value); scheduleProjectNoteSave(e.target.value) }}
+                  onBlur={() => { void saveProjectNoteAndPreview() }}
+                  autoFocus
+                  spellCheck={false}
+                />
+              </>
+            ) : (
+              <div
+                className="note-preview project-note-preview"
+                title="더블 클릭하여 편집"
+                onDoubleClick={() => setProjectNoteEditing(true)}
+                dangerouslySetInnerHTML={{
+                  __html: DOMPurify.sanitize(projectNoteRendered, {
+                    ADD_TAGS: ["pre", "code", "span", "div", "input", "table", "thead", "tbody", "tr", "th", "td"],
+                    ADD_ATTR: ["class", "id", "style", "checked", "disabled", "type", "data-line"],
+                  }),
+                }}
+              />
+            )}
+
+          </div>
+        )}
+
+        {projectNoteOpen && (
+          <div
+            className="sidebar-note-search-resize"
+            onMouseDown={e => { projectNoteResizeRef.current = { startY: e.clientY, origH: projectNoteHeight }; e.preventDefault() }}
+          />
+        )}
+
+        <div className="search-bar" style={!projectNoteOpen ? { marginTop: '-14px' } : undefined}>
+          <div className="search-input-row">
+            <span className="search-icon">🔍</span>
+            <input
+              ref={searchInputRef}
+              className="search-input"
+              placeholder="검색... (Ctrl+K)"
+              value={searchQuery}
+              onChange={e => {
+                const q = e.target.value
+                setSearchQuery(q)
+                runSearch(q, searchType)
+              }}
+            />
+            {searchQuery && (
+              <button className="search-clear" onClick={() => { setSearchQuery(""); setSearchResults([]) }}>×</button>
+            )}
+          </div>
+          {searchQuery && (
+            <div className="search-type-row">
+              <button className={`search-type-btn${searchType === "name" ? " active" : ""}`} onClick={() => { setSearchType("name"); runSearch(searchQuery, "name") }}>파일명</button>
+              <button className={`search-type-btn${searchType === "content" ? " active" : ""}`} onClick={() => { setSearchType("content"); runSearch(searchQuery, "content") }}>내용</button>
+            </div>
+          )}
+        </div>
+
+        {searchQuery ? (
+          <div className="sidebar-scrollable-tree">
+            {searching && <div className="search-status">검색 중…</div>}
+            {!searching && searchResults.length === 0 && <div className="search-status">결과 없음</div>}
+            {searchResults.map(r => (
+              <div key={r.path} className="search-result" onClick={() => { openFile(r.path, r.name); if (isMobile) setSidebarVisible(false) }}>
+                <div className="search-result-name">
+                  <span className="tree-icon">📄</span>
+                  <span className="search-result-filename">{r.name}</span>
+                </div>
+                <div className="search-result-dir">{r.dir}</div>
+                {r.matches?.map((m, i) => (
+                  <div key={i} className="search-match">
+                    <span className="search-match-line">{m.line}</span>
+                    <span className="search-match-text">{m.text}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="sidebar-scrollable-tree">{render(tree)}</div>
+        )}
 
         <div
           className="sidebar-path-bar"
@@ -1096,25 +1896,147 @@ export default function App() {
       >
         <div className="titlebar">
           <div className="title">{title || "Select File"}</div>
-          {renderToggle && (
-            <div className="toolbar">
+          <div className="titlebar-actions">
+            {renderToggle && (
+              <div className="toolbar">
+                <button
+                  className={viewMode === "render" ? "toolbar-btn active" : "toolbar-btn"}
+                  onClick={() => setViewMode("render")}
+                >
+                  Render
+                </button>
+                <button
+                  className={viewMode === "text" ? "toolbar-btn active" : "toolbar-btn"}
+                  onClick={() => setViewMode("text")}
+                >
+                  Text
+                </button>
+              </div>
+            )}
+            {currentPath && (
               <button
-                className={viewMode === "render" ? "toolbar-btn active" : "toolbar-btn"}
-                onClick={() => setViewMode("render")}
+                className={`note-btn${noteContent ? " has-note" : ""}`}
+                onClick={() => {
+                  if (noteOpen) { setNoteOpen(false); return }
+                  if (!notePos) setNotePos({ x: Math.max(0, window.innerWidth - 384), y: Math.max(0, window.innerHeight - 364) })
+                  void loadNote(currentPath)
+                  setNoteOpen(true)
+                }}
+                title="파일 노트 (Markdown)"
               >
-                Render
+                📝
               </button>
-              <button
-                className={viewMode === "text" ? "toolbar-btn active" : "toolbar-btn"}
-                onClick={() => setViewMode("text")}
-              >
-                Text
-              </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
         <div className="preview">{renderPreview()}</div>
       </div>
+
+      {noteOpen && currentPath && (
+        <>
+          {isMobile && <div className="note-backdrop" onClick={() => setNoteOpen(false)} />}
+          <div
+            className="note-panel"
+            style={!isMobile ? {
+              ...(notePos ? { left: notePos.x, top: notePos.y, bottom: "auto", right: "auto" } : {}),
+              width: noteSize.w,
+              height: noteSize.h,
+            } : undefined}
+          >
+            <div
+              className={`note-panel-header${!isMobile ? " draggable" : ""}`}
+              onMouseDown={startNoteDrag}
+            >
+              <span className="note-panel-title">📝 {title}</span>
+              <div className="note-panel-meta">
+                {noteEditing && !noteSaved && <span className="note-status saving">저장 중…</span>}
+                {noteEditing && noteSaved && noteContent && <span className="note-status saved">✓</span>}
+                {!noteEditing && <button className="note-mode-btn" onClick={() => setNoteEditing(true)}>편집</button>}
+                <button className="note-close-btn" onClick={() => setNoteOpen(false)}>×</button>
+              </div>
+            </div>
+
+            {noteEditing ? (
+              <>
+                <div className="note-toolbar">
+                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("# ") }} title="제목 1">H1</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("## ") }} title="제목 2">H2</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("### ") }} title="제목 3">H3</button>
+                  <span className="note-toolbar-sep" />
+                  <button className="tb-bold" onMouseDown={e => { e.preventDefault(); insertMarkdown("**", "**", "굵게") }} title="굵게">B</button>
+                  <button className="tb-italic" onMouseDown={e => { e.preventDefault(); insertMarkdown("*", "*", "기울임") }} title="기울임">I</button>
+                  <button className="tb-strike" onMouseDown={e => { e.preventDefault(); insertMarkdown("~~", "~~", "취소선") }} title="취소선">S</button>
+                  <span className="note-toolbar-sep" />
+                  <button onMouseDown={e => { e.preventDefault(); insertMarkdown("`", "`", "코드") }} title="인라인 코드">{"<>"}</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertMarkdown("\n```\n", "\n```", "코드") }} title="코드 블록">{"```"}</button>
+                  <span className="note-toolbar-sep" />
+                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("- ") }} title="목록">•</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("1. ") }} title="번호 목록">1.</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("> ") }} title="인용">❝</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("- [ ] ") }} title="체크 항목">☑</button>
+                  <span className="note-toolbar-sep" />
+                  <button onMouseDown={e => { e.preventDefault(); insertMarkdown("[", "](url)", "링크") }} title="링크">🔗</button>
+                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("---\n") }} title="구분선">—</button>
+                </div>
+                <textarea
+                  ref={noteTextareaRef}
+                  className="note-textarea"
+                  placeholder="이 파일에 대한 메모를 Markdown으로 작성하세요…"
+                  value={noteContent}
+                  onChange={e => {
+                    setNoteContent(e.target.value)
+                    scheduleNoteSave(e.target.value)
+                  }}
+                  autoFocus
+                  spellCheck={false}
+                />
+              </>
+            ) : (
+              <div
+                className="note-preview"
+                dangerouslySetInnerHTML={{
+                  __html: DOMPurify.sanitize(noteRendered, {
+                    ADD_TAGS: ["pre", "code", "span", "div", "input", "table", "thead", "tbody", "tr", "th", "td"],
+                    ADD_ATTR: ["class", "id", "style", "checked", "disabled", "type", "data-line"],
+                  }),
+                }}
+              />
+            )}
+
+            <div className="note-panel-footer">
+              <span className="note-path">{`.notes/${relPath(currentPath)}.md`}</span>
+              <div className="note-footer-actions">
+                {noteContent && (
+                  <button
+                    className="note-delete-btn"
+                    onClick={async () => {
+                      if (noteTimerRef.current) clearTimeout(noteTimerRef.current)
+                      await fetch(`/api/notes?path=${encodeURIComponent(currentPath)}`, { method: "DELETE", headers: { "X-Session-Id": SESSION_ID } })
+                      setNoteContent("")
+                      setNoteRendered("")
+                      setNoteEditing(true)
+                      setNoteSaved(true)
+                    }}
+                  >
+                    삭제
+                  </button>
+                )}
+                {noteEditing && (
+                  <button className="note-save-btn" onClick={saveAndPreview}>
+                    저장
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {!isMobile && (<>
+              <div className="note-resize-e" onMouseDown={e => { noteResizeRef.current = { startX: e.clientX, startY: e.clientY, origW: noteSize.w, origH: noteSize.h, mode: "e" }; e.preventDefault() }} />
+              <div className="note-resize-s" onMouseDown={e => { noteResizeRef.current = { startX: e.clientX, startY: e.clientY, origW: noteSize.w, origH: noteSize.h, mode: "s" }; e.preventDefault() }} />
+              <div className="note-resize-se" onMouseDown={e => { noteResizeRef.current = { startX: e.clientX, startY: e.clientY, origW: noteSize.w, origH: noteSize.h, mode: "se" }; e.preventDefault() }} />
+            </>)}
+          </div>
+        </>
+      )}
     </div>
   )
 }
