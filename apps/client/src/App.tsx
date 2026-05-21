@@ -1011,6 +1011,7 @@ export default function App() {
   const refreshSeqRef = useRef(-1)
   const fileLoadAbortRef = useRef<AbortController | null>(null)
   const [fileLoading, setFileLoading] = useState(false)
+  const [treeRefreshing, setTreeRefreshing] = useState(false)
   const [noteOpen, setNoteOpen] = useState(false)
   const [noteContent, setNoteContent] = useState("")
   const [noteRendered, setNoteRendered] = useState("")
@@ -1140,6 +1141,21 @@ export default function App() {
     const norm = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "")
     const rel = norm(full).slice(norm(root).length).replace(/^\//, "")
     return rel || full
+  }
+
+  async function refreshTree() {
+    if (!root || treeRefreshing) return
+    setTreeRefreshing(true)
+    fileCacheRef.current.clear()
+    setDirChildren(new Map())
+    await loadTree(root)
+    setTreeRefreshing(false)
+  }
+
+  async function refreshCurrentFile() {
+    if (!currentPath || fileLoading) return
+    fileCacheRef.current.delete(currentPath)
+    await openFile(currentPath, title)
   }
 
   async function loadTree(expectedRoot: string) {
@@ -1696,13 +1712,23 @@ export default function App() {
                 <span className="project-arrow">{showProjectList ? "▲" : "▼"}</span>
               </div>
               {root && (
-                <button
-                  className={`project-note-btn${projectNoteOpen ? " active" : ""}`}
-                  onClick={() => void openProjectNote()}
-                  title="프로젝트 노트"
-                >
-                  📓
-                </button>
+                <>
+                  <button
+                    className={`project-note-btn${treeRefreshing ? " spinning" : ""}`}
+                    onClick={() => void refreshTree()}
+                    title="파일 트리 새로고침"
+                    disabled={treeRefreshing}
+                  >
+                    ↺
+                  </button>
+                  <button
+                    className={`project-note-btn${projectNoteOpen ? " active" : ""}`}
+                    onClick={() => void openProjectNote()}
+                    title="프로젝트 노트"
+                  >
+                    📓
+                  </button>
+                </>
               )}
             </div>
 
@@ -1912,6 +1938,16 @@ export default function App() {
                   Text
                 </button>
               </div>
+            )}
+            {currentPath && (
+              <button
+                className={`toolbar-btn${fileLoading ? " spinning" : ""}`}
+                onClick={() => void refreshCurrentFile()}
+                title="현재 파일 새로고침"
+                disabled={fileLoading}
+              >
+                ↺
+              </button>
             )}
             {currentPath && (
               <button
