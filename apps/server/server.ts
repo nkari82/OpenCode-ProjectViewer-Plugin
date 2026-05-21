@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "url"
 import { createRequire } from "module"
 import { extractSymbols } from "./symbolExtractor.js"
 import { deflateRawSync, inflateRawSync } from "zlib"
-import { execSync } from "child_process"
+import { execSync, spawn } from "child_process"
 
 const _require = createRequire(import.meta.url)
 
@@ -566,6 +566,23 @@ app.get("/api/search", (req, res) => {
     const results: SearchResult[] = []
     searchWalk(root, q, type, results)
     res.json({ results })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post("/api/open-in-explorer", (req, res) => {
+  const root = getSessionRoot(req)
+  if (!root) return res.status(400).json({ error: "no project root" })
+  try {
+    if (process.platform === "win32") {
+      spawn("explorer", [root], { detached: true, stdio: "ignore" }).unref()
+    } else if (process.platform === "darwin") {
+      spawn("open", [root], { detached: true, stdio: "ignore" }).unref()
+    } else {
+      spawn("xdg-open", [root], { detached: true, stdio: "ignore" }).unref()
+    }
+    res.json({ ok: true })
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }

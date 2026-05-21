@@ -1714,6 +1714,15 @@ export default function App() {
               {root && (
                 <>
                   <button
+                    className="project-note-btn"
+                    onClick={async () => {
+                      await fetch("/api/open-in-explorer", { method: "POST", headers: { "X-Session-Id": SESSION_ID } })
+                    }}
+                    title="파일 탐색기로 열기"
+                  >
+                    📂
+                  </button>
+                  <button
                     className={`project-note-btn${treeRefreshing ? " spinning" : ""}`}
                     onClick={() => void refreshTree()}
                     title="파일 트리 새로고침"
