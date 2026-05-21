@@ -169,6 +169,28 @@ async function startViewerServer() {
   return p
 }
 
+function openBrowser(url: string) {
+  if (process.platform === "win32") {
+    spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref()
+  } else if (process.platform === "darwin") {
+    spawn("open", [url], { detached: true, stdio: "ignore" }).unref()
+  } else {
+    spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref()
+  }
+}
+
+async function syncProjectToViewer(worktree: string) {
+  if (!worktree) return
+  try {
+    await fetchWithTimeout(viewerUrl("/api/open-project"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: worktree }),
+    }, 2000)
+    pluginLog(`프로젝트 동기화: ${worktree}`)
+  } catch {}
+}
+
 function startWatchdog() {
   if (watchdogTimer) return
   watchdogTimer = setInterval(async () => {
@@ -181,12 +203,54 @@ function startWatchdog() {
   }, 30_000)
 }
 
-const plugin = async (_ctx?: any) => {
+const plugin = async (ctx?: any) => {
   pluginLog(`plugin() 호출됨`)
-  startViewerServer().catch(err => {
+
+  const ready = await startViewerServer().catch(err => {
     pluginLog(`Server startup error: ${err}`)
+    return false
   })
   startWatchdog()
+
+  if (!ctx) return {}
+
+  // 현재 프로젝트를 뷰어에 자동 동기화
+  if (ready) {
+    const worktree = ctx.state?.path?.worktree
+    if (worktree) await syncProjectToViewer(worktree)
+  }
+
+  // 프로젝트 변경 시 자동 동기화
+  try {
+    ctx.event?.on?.("project.updated", async (event: any) => {
+      const worktree = event?.properties?.worktree
+      if (worktree) await syncProjectToViewer(worktree)
+    })
+  } catch {}
+
+  // /open-view 슬래시 커맨드 등록
+  try {
+    ctx.command?.register?.(() => [
+      {
+        title: "Open Project Viewer",
+        value: "open-view",
+        description: "브라우저에서 프로젝트 뷰어 열기 (localhost:4310)",
+        category: "Plugin",
+        slash: { name: "open-view" },
+        onSelect: async () => {
+          const worktree = ctx.state?.path?.worktree
+          if (worktree && await pingServer()) {
+            await syncProjectToViewer(worktree)
+          }
+          openBrowser(viewerUrl())
+        },
+      },
+    ])
+    pluginLog("/open-view 커맨드 등록됨")
+  } catch (err) {
+    pluginLog(`커맨드 등록 실패: ${err}`)
+  }
+
   return {}
 }
 
