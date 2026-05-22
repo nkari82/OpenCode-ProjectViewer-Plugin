@@ -201,19 +201,21 @@ function shutdownServer(reason: string, details: string | null) {
 
   console.log("[viewer] shutdown:", reason, details || "")
 
-  const forceTimer = setTimeout(() => process.exit(0), 1500)
-  forceTimer.unref?.()
-
+  // Force-close all keep-alive connections so the port is released immediately.
+  // Graceful drain is unnecessary here — we're exiting anyway.
   try {
     if (httpServer) {
-      httpServer.close(() => process.exit(0))
-      return
+      // Node 18.2+ API; harmless if unavailable
+      if (typeof (httpServer as any).closeAllConnections === "function") {
+        (httpServer as any).closeAllConnections()
+      }
+      httpServer.close()
     }
-  } catch (err) {
-    console.error("[viewer:http server close failed]", err)
-  }
+  } catch {}
 
-  process.exit(0)
+  // Small delay to let the OS release the port before the process exits,
+  // giving a new server instance a clean bind.
+  setTimeout(() => process.exit(0), 150)
 }
 
 const PORT = Number(process.env.PORT) || 4310
@@ -351,6 +353,22 @@ async function getMdShiki(): Promise<MarkdownIt> {
     .use(container, "note",    mkContainer("note",    "📝 Note"))
     .use(container, "success", mkContainer("success", "✅ Success"))
     .use(container, "details", mkContainer("details", "📋 Details"))
+
+  const origFence = mdShiki.renderer.rules.fence
+  mdShiki.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    const lang = token.info.trim().split(/\s+/)[0].toLowerCase()
+    const code = token.content.trim()
+    const isPlantUml = lang === "plantuml" || lang === "puml" || code.startsWith("@startuml")
+    if (isPlantUml) {
+      const finalCode = code.startsWith("@start") ? code : `@startuml\n${code}\n@enduml`
+      const encoded = encodePlantUml(finalCode)
+      return `<div class="md-plantuml"><img src="/api/plantuml/${encoded}" alt="PlantUML Diagram" /></div>\n`
+    }
+    if (origFence) return origFence(tokens, idx, options, env, self)
+    return self.renderToken(tokens, idx, options)
+  }
+
   return mdShiki
 }
 
@@ -578,7 +596,7 @@ app.post("/api/open-in-explorer", (req, res) => {
   try {
     if (process.platform === "win32") {
       const normalized = path.normalize(targetPath)
-      spawn("explorer.exe", [normalized], { detached: true, stdio: "ignore" }).unref()
+      spawn("cmd.exe", ["/c", "start", "", normalized], { detached: true, stdio: "ignore" }).unref()
     } else if (process.platform === "darwin") {
       spawn("open", [targetPath], { detached: true, stdio: "ignore" }).unref()
     } else {
@@ -622,6 +640,7 @@ app.post("/api/open-project", (req, res) => {
     console.log("[viewer] session root:", sid.slice(0, 8), newRoot)
   } else {
     ROOT = newRoot
+    sessionRoots.clear()
     persistRoot(ROOT)
     console.log("[viewer] global root:", ROOT)
   }
@@ -1212,19 +1231,25 @@ function killProcessOnPort(port: number) {
   } catch {}
 }
 
-function startServer(retry = true) {
+let startRetries = 0
+const MAX_START_RETRIES = 5
+
+function startServer() {
   httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`[viewer] running at http://0.0.0.0:${PORT} (also http://127.0.0.1:${PORT})`)
     console.log(`[viewer] mode: standalone`)
+    startRetries = 0
   })
 
   httpServer.on("error", (err: any) => {
     console.error("[viewer:listen error]", err)
 
-    if (retry && err?.code === "EADDRINUSE") {
-      console.log("[viewer:retry after kill]", { port: PORT })
+    if (err?.code === "EADDRINUSE" && startRetries < MAX_START_RETRIES) {
+      startRetries++
+      const delay = 500 * startRetries
+      console.log(`[viewer:retry after kill] attempt=${startRetries} delay=${delay}ms`)
       killProcessOnPort(PORT)
-      setTimeout(() => startServer(false), 1000)
+      setTimeout(() => startServer(), delay)
       return
     }
 
@@ -1256,4 +1281,4 @@ if (PARENT_PID) {
 }
 
 killProcessOnPort(PORT)
-setTimeout(() => startServer(), 200)
+setTimeout(() => startServer(), 800)
