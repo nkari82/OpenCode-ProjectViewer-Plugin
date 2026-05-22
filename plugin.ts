@@ -22,7 +22,6 @@ function handleShutdown(signal: string) {
   isShuttingDown = true
   pluginLog(`종료 시그널 수신: ${signal}`)
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
-  // 서버가 PARENT_PID 모니터링으로 스스로 종료할 때까지 잠시 대기 후 강제 종료
   setTimeout(() => process.exit(0), 500)
 }
 
@@ -106,6 +105,7 @@ function findNodeExecutable(): string {
   return "node"
 }
 
+let latestWorktree = ""
 let startViewerPromise: Promise<boolean> | null = null
 async function startViewerServer() {
   if (startViewerPromise) return startViewerPromise
@@ -113,20 +113,24 @@ async function startViewerServer() {
   const p = (async () => {
     pluginLog("startViewerServer() 진입")
 
-    // 서버가 이미 살아 있으면 → 재사용. 이 인스턴스 PID만 등록해서 마지막 종료 시 서버도 내려가게.
     if (await pingServer()) {
       pluginLog("서버 이미 실행 중, PID 등록 후 재사용")
       try {
-        await fetchWithTimeout(viewerUrl("/api/register-pid"), {
+        const regRes = await fetchWithTimeout(viewerUrl("/api/register-pid"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pid: process.pid }),
         })
-      } catch {}
-      return true
+        if (regRes && regRes.ok) {
+          return true
+        }
+        pluginLog("register-pid 실패 (서버 종료 중), 새 서버 스폰")
+      } catch {
+        pluginLog("register-pid 오류, 새 서버 스폰")
+      }
+      // Fall through to spawn a fresh server
     }
 
-    // 서버가 없으면 → 포트에 좀비 프로세스만 제거하고 신규 스폰
     pluginLog(`포트 ${currentPort} 킬 중...`)
     await killProcessOnPort(currentPort)
 
@@ -232,24 +236,23 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
 
   if (!input) return {}
 
-  // 현재 프로젝트를 뷰어에 자동 동기화 (루트 경로 / 는 유효하지 않으므로 건너뜀)
   if (ready) {
     const worktree = input.worktree
     if (worktree && worktree !== "/" && worktree.length > 2) {
+      latestWorktree = worktree
       await syncProjectToViewer(worktree)
     }
   }
 
   return {
-    // 이벤트로 프로젝트 변경 감지
     event: async ({ event }: any) => {
       const worktree = event?.properties?.worktree
       if (worktree && worktree !== "/" && worktree.length > 2) {
+        latestWorktree = worktree
         await syncProjectToViewer(worktree)
       }
     },
 
-    // config hook으로 /open-view 커맨드 등록 (OpenCode가 호출할 때마다 실행되므로 로그 제거)
     config: async (config: any) => {
       if (!config.command) config.command = {}
       config.command["open-view"] = {
@@ -258,10 +261,9 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
       }
     },
 
-    // /open-view 실행 시 브라우저 열기
     "command.execute.before": async (cmdInput: any, _output: any) => {
       if (cmdInput.command === "open-view") {
-        const worktree = input.worktree
+        const worktree = latestWorktree || input.worktree
         if (worktree && worktree !== "/" && worktree.length > 2 && await pingServer()) {
           await syncProjectToViewer(worktree)
         }

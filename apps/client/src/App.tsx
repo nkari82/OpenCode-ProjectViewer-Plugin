@@ -535,7 +535,7 @@ function PdfViewer({ url, title, filePath }: { url: string; title: string; fileP
               )}
               {segments.map((seg, i) =>
                 seg.isMath ? (
-                  <div key={i} className="pdf-math-seg" dangerouslySetInnerHTML={{ __html: renderMath(seg.text) }} />
+                  <div key={i} className="pdf-math-seg">{seg.text}</div>
                 ) : (
                   <p key={i} className="pdf-trans-para">
                     {translations[i] !== undefined ? translations[i] : <span className="pdf-trans-pending" />}
@@ -893,8 +893,8 @@ interface CodeBlockProps {
 function CodeBlock({ rendered, symbols, onFileOpen, currentPath, viewMode, fileType }: CodeBlockProps) {
   const sanitizedHtml = useMemo(
     () => DOMPurify.sanitize(rendered, {
-      ADD_TAGS: ["pre", "code", "span", "div", "input"],
-      ADD_ATTR: ["class", "id", "style", "checked", "disabled", "type"],
+      ADD_TAGS: ["pre", "code", "span", "div", "input", "img"],
+      ADD_ATTR: ["class", "id", "style", "checked", "disabled", "type", "src", "alt"],
     }),
     [rendered],
   )
@@ -970,6 +970,98 @@ function CodeBlock({ rendered, symbols, onFileOpen, currentPath, viewMode, fileT
   )
 }
 
+async function renderNoteMarkdown(content: string): Promise<string> {
+  try {
+    const resp = await fetch("/api/render-markdown", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    })
+    if (!resp.ok) throw new Error(`status ${resp.status}`)
+    const data = await resp.json()
+    return data.html ?? ""
+  } catch {
+    return ""
+  }
+}
+
+function NoteToolbar({
+  onInsert,
+  onPrefix,
+  showDivider = false,
+}: {
+  onInsert: (before: string, after: string, placeholder: string) => void
+  onPrefix: (prefix: string) => void
+  showDivider?: boolean
+}) {
+  return (
+    <div className="note-toolbar">
+      <button onMouseDown={e => { e.preventDefault(); onPrefix("# ") }} title="제목 1">H1</button>
+      <button onMouseDown={e => { e.preventDefault(); onPrefix("## ") }} title="제목 2">H2</button>
+      <button onMouseDown={e => { e.preventDefault(); onPrefix("### ") }} title="제목 3">H3</button>
+      <span className="note-toolbar-sep" />
+      <button className="tb-bold" onMouseDown={e => { e.preventDefault(); onInsert("**", "**", "굵게") }} title="굵게">B</button>
+      <button className="tb-italic" onMouseDown={e => { e.preventDefault(); onInsert("*", "*", "기울임") }} title="기울임">I</button>
+      <button className="tb-strike" onMouseDown={e => { e.preventDefault(); onInsert("~~", "~~", "취소선") }} title="취소선">S</button>
+      <span className="note-toolbar-sep" />
+      <button onMouseDown={e => { e.preventDefault(); onInsert("`", "`", "코드") }} title="인라인 코드">{"<>"}</button>
+      <button onMouseDown={e => { e.preventDefault(); onInsert("\n```\n", "\n```", "코드") }} title="코드 블록">{"```"}</button>
+      <span className="note-toolbar-sep" />
+      <button onMouseDown={e => { e.preventDefault(); onPrefix("- ") }} title="목록">•</button>
+      <button onMouseDown={e => { e.preventDefault(); onPrefix("1. ") }} title="번호 목록">1.</button>
+      <button onMouseDown={e => { e.preventDefault(); onPrefix("> ") }} title="인용">❝</button>
+      <button onMouseDown={e => { e.preventDefault(); onPrefix("- [ ] ") }} title="체크 항목">☑</button>
+      <span className="note-toolbar-sep" />
+      <button onMouseDown={e => { e.preventDefault(); onInsert("[", "](url)", "링크") }} title="링크">🔗</button>
+      {showDivider && (
+        <button onMouseDown={e => { e.preventDefault(); onPrefix("---\n") }} title="구분선">—</button>
+      )}
+    </div>
+  )
+}
+
+function noteEditActions(
+  content: string,
+  setContent: (v: string) => void,
+  scheduleSave: (v: string) => void,
+  textareaRef: { current: HTMLTextAreaElement | null },
+) {
+  function insertMarkdown(before: string, after = "", placeholder = "") {
+    const ta = textareaRef.current
+    if (!ta) return
+    const start = ta.selectionStart
+    const end = ta.selectionEnd
+    const selected = content.slice(start, end) || placeholder
+    const newValue = content.slice(0, start) + before + selected + after + content.slice(end)
+    setContent(newValue)
+    scheduleSave(newValue)
+    setTimeout(() => {
+      ta.focus()
+      ta.setSelectionRange(start + before.length, start + before.length + selected.length)
+    }, 0)
+  }
+
+  function insertLinePrefix(prefix: string) {
+    const ta = textareaRef.current
+    if (!ta) return
+    const start = ta.selectionStart
+    const lineStart = content.lastIndexOf("\n", start - 1) + 1
+    if (content.slice(lineStart, lineStart + prefix.length) === prefix) {
+      const newValue = content.slice(0, lineStart) + content.slice(lineStart + prefix.length)
+      setContent(newValue)
+      scheduleSave(newValue)
+      setTimeout(() => { ta.focus(); ta.setSelectionRange(Math.max(lineStart, start - prefix.length), Math.max(lineStart, start - prefix.length)) }, 0)
+    } else {
+      const newValue = content.slice(0, lineStart) + prefix + content.slice(lineStart)
+      setContent(newValue)
+      scheduleSave(newValue)
+      setTimeout(() => { ta.focus(); ta.setSelectionRange(start + prefix.length, start + prefix.length) }, 0)
+    }
+  }
+
+  return { insertMarkdown, insertLinePrefix }
+}
+
 export default function App() {
   const [tree, setTree] = useState<TreeNode[]>([])
   const [title, setTitle] = useState<string>("")
@@ -1007,6 +1099,7 @@ export default function App() {
   const syncTokenRef = useRef(0)
   const rootRef = useRef(root)
   const checkRootPendingRef = useRef(false)
+  const isSwitchingProjectRef = useRef(false)
   const fileCacheRef = useRef(new Map<string, FileData>())
   const refreshSeqRef = useRef(-1)
   const fileLoadAbortRef = useRef<AbortController | null>(null)
@@ -1222,6 +1315,7 @@ export default function App() {
     checkRootPendingRef.current = true
     try {
       const data = await fetchJson<{ root: string; refreshSeq?: number }>("/api/root")
+      if (isSwitchingProjectRef.current) return
       const rootValue = data.root || ""
       // Invalidate file cache when server signals files changed
       if (data.refreshSeq !== undefined && data.refreshSeq !== refreshSeqRef.current) {
@@ -1245,22 +1339,6 @@ export default function App() {
       console.error("checkRoot failed", err)
     } finally {
       checkRootPendingRef.current = false
-    }
-  }
-
-  async function renderNoteMarkdown(content: string): Promise<string> {
-    try {
-      const resp = await fetch("/api/render-markdown", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      })
-      if (!resp.ok) throw new Error(`status ${resp.status}`)
-      const data = await resp.json()
-      return data.html ?? ""
-    } catch (err) {
-      console.error("[note render]", err)
-      return ""
     }
   }
 
@@ -1371,72 +1449,8 @@ export default function App() {
     }
   }
 
-  function insertMarkdown(before: string, after = "", placeholder = "") {
-    const ta = noteTextareaRef.current
-    if (!ta) return
-    const start = ta.selectionStart
-    const end = ta.selectionEnd
-    const selected = noteContent.slice(start, end) || placeholder
-    const newValue = noteContent.slice(0, start) + before + selected + after + noteContent.slice(end)
-    setNoteContent(newValue)
-    scheduleNoteSave(newValue)
-    setTimeout(() => {
-      ta.focus()
-      ta.setSelectionRange(start + before.length, start + before.length + selected.length)
-    }, 0)
-  }
-
-  function insertLinePrefix(prefix: string) {
-    const ta = noteTextareaRef.current
-    if (!ta) return
-    const start = ta.selectionStart
-    const lineStart = noteContent.lastIndexOf("\n", start - 1) + 1
-    // Toggle: remove prefix if already present, otherwise add
-    if (noteContent.slice(lineStart, lineStart + prefix.length) === prefix) {
-      const newValue = noteContent.slice(0, lineStart) + noteContent.slice(lineStart + prefix.length)
-      setNoteContent(newValue)
-      scheduleNoteSave(newValue)
-      setTimeout(() => { ta.focus(); ta.setSelectionRange(Math.max(lineStart, start - prefix.length), Math.max(lineStart, start - prefix.length)) }, 0)
-    } else {
-      const newValue = noteContent.slice(0, lineStart) + prefix + noteContent.slice(lineStart)
-      setNoteContent(newValue)
-      scheduleNoteSave(newValue)
-      setTimeout(() => { ta.focus(); ta.setSelectionRange(start + prefix.length, start + prefix.length) }, 0)
-    }
-  }
-
-  function insertProjectMarkdown(before: string, after = "", placeholder = "") {
-    const ta = projectNoteTextareaRef.current
-    if (!ta) return
-    const start = ta.selectionStart
-    const end = ta.selectionEnd
-    const selected = projectNoteContent.slice(start, end) || placeholder
-    const newValue = projectNoteContent.slice(0, start) + before + selected + after + projectNoteContent.slice(end)
-    setProjectNoteContent(newValue)
-    scheduleProjectNoteSave(newValue)
-    setTimeout(() => {
-      ta.focus()
-      ta.setSelectionRange(start + before.length, start + before.length + selected.length)
-    }, 0)
-  }
-
-  function insertProjectLinePrefix(prefix: string) {
-    const ta = projectNoteTextareaRef.current
-    if (!ta) return
-    const start = ta.selectionStart
-    const lineStart = projectNoteContent.lastIndexOf("\n", start - 1) + 1
-    if (projectNoteContent.slice(lineStart, lineStart + prefix.length) === prefix) {
-      const newValue = projectNoteContent.slice(0, lineStart) + projectNoteContent.slice(lineStart + prefix.length)
-      setProjectNoteContent(newValue)
-      scheduleProjectNoteSave(newValue)
-      setTimeout(() => { ta.focus(); ta.setSelectionRange(Math.max(lineStart, start - prefix.length), Math.max(lineStart, start - prefix.length)) }, 0)
-    } else {
-      const newValue = projectNoteContent.slice(0, lineStart) + prefix + projectNoteContent.slice(lineStart)
-      setProjectNoteContent(newValue)
-      scheduleProjectNoteSave(newValue)
-      setTimeout(() => { ta.focus(); ta.setSelectionRange(start + prefix.length, start + prefix.length) }, 0)
-    }
-  }
+  const { insertMarkdown, insertLinePrefix } = noteEditActions(noteContent, setNoteContent, scheduleNoteSave, noteTextareaRef)
+  const { insertMarkdown: insertProjectMarkdown, insertLinePrefix: insertProjectLinePrefix } = noteEditActions(projectNoteContent, setProjectNoteContent, scheduleProjectNoteSave, projectNoteTextareaRef)
 
   async function loadProjects(forceRefresh = false) {
     setProjectsLoading(true)
@@ -1781,6 +1795,7 @@ export default function App() {
                     className={p.worktree === root ? "project-list-item active" : "project-list-item"}
                     onClick={async () => {
                       setShowProjectList(false)
+                      isSwitchingProjectRef.current = true
                       try {
                         const resp = await fetch("/api/open-project", {
                           method: "POST",
@@ -1801,6 +1816,8 @@ export default function App() {
                         }
                       } catch (err) {
                         console.error("switch project failed", err)
+                      } finally {
+                        isSwitchingProjectRef.current = false
                       }
                     }}
                   >
@@ -1841,25 +1858,7 @@ export default function App() {
           <div className="sidebar-project-note" style={{ height: projectNoteHeight }}>
             {projectNoteEditing ? (
               <>
-                <div className="note-toolbar">
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("# ") }} title="제목 1">H1</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("## ") }} title="제목 2">H2</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("### ") }} title="제목 3">H3</button>
-                  <span className="note-toolbar-sep" />
-                  <button className="tb-bold" onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("**", "**", "굵게") }} title="굵게">B</button>
-                  <button className="tb-italic" onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("*", "*", "기울임") }} title="기울임">I</button>
-                  <button className="tb-strike" onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("~~", "~~", "취소선") }} title="취소선">S</button>
-                  <span className="note-toolbar-sep" />
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("`", "`", "코드") }} title="인라인 코드">{"<>"}</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("\n```\n", "\n```", "코드") }} title="코드 블록">{"```"}</button>
-                  <span className="note-toolbar-sep" />
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("- ") }} title="목록">•</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("1. ") }} title="번호 목록">1.</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("> ") }} title="인용">❝</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectLinePrefix("- [ ] ") }} title="체크 항목">☑</button>
-                  <span className="note-toolbar-sep" />
-                  <button onMouseDown={e => { e.preventDefault(); insertProjectMarkdown("[", "](url)", "링크") }} title="링크">🔗</button>
-                </div>
+                <NoteToolbar onInsert={insertProjectMarkdown} onPrefix={insertProjectLinePrefix} />
                 <textarea
                   ref={projectNoteTextareaRef}
                   className="note-textarea"
@@ -2035,26 +2034,7 @@ export default function App() {
 
             {noteEditing ? (
               <>
-                <div className="note-toolbar">
-                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("# ") }} title="제목 1">H1</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("## ") }} title="제목 2">H2</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("### ") }} title="제목 3">H3</button>
-                  <span className="note-toolbar-sep" />
-                  <button className="tb-bold" onMouseDown={e => { e.preventDefault(); insertMarkdown("**", "**", "굵게") }} title="굵게">B</button>
-                  <button className="tb-italic" onMouseDown={e => { e.preventDefault(); insertMarkdown("*", "*", "기울임") }} title="기울임">I</button>
-                  <button className="tb-strike" onMouseDown={e => { e.preventDefault(); insertMarkdown("~~", "~~", "취소선") }} title="취소선">S</button>
-                  <span className="note-toolbar-sep" />
-                  <button onMouseDown={e => { e.preventDefault(); insertMarkdown("`", "`", "코드") }} title="인라인 코드">{"<>"}</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertMarkdown("\n```\n", "\n```", "코드") }} title="코드 블록">{"```"}</button>
-                  <span className="note-toolbar-sep" />
-                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("- ") }} title="목록">•</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("1. ") }} title="번호 목록">1.</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("> ") }} title="인용">❝</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("- [ ] ") }} title="체크 항목">☑</button>
-                  <span className="note-toolbar-sep" />
-                  <button onMouseDown={e => { e.preventDefault(); insertMarkdown("[", "](url)", "링크") }} title="링크">🔗</button>
-                  <button onMouseDown={e => { e.preventDefault(); insertLinePrefix("---\n") }} title="구분선">—</button>
-                </div>
+                <NoteToolbar onInsert={insertMarkdown} onPrefix={insertLinePrefix} showDivider />
                 <textarea
                   ref={noteTextareaRef}
                   className="note-textarea"

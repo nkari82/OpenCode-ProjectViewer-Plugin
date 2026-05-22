@@ -1359,6 +1359,18 @@ code {
 .preview .md-container-details { border-color: #8b5cf6; background: #2e1a4722; }
 .preview .md-container-details .md-container-title { color: #a78bfa; }
 
+/* Inline PlantUML in Markdown */
+.preview .md-plantuml {
+  margin: 1rem 0;
+  text-align: center;
+}
+.preview .md-plantuml img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  background: #fff;
+}
+
 /* Mermaid */
 
 svg {
