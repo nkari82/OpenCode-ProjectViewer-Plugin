@@ -1715,8 +1715,20 @@ export default function App() {
                 <>
                   <button
                     className="project-note-btn"
-                    onClick={async () => {
-                      await fetch("/api/open-in-explorer", { method: "POST", headers: { "X-Session-Id": SESSION_ID } })
+                    onClick={async (e) => {
+                      const btn = e.currentTarget
+                      btn.disabled = true
+                      try {
+                        const resp = await fetch("/api/open-in-explorer", { method: "POST", headers: { "X-Session-Id": SESSION_ID } })
+                        if (!resp.ok) {
+                          const data = await resp.json().catch(() => ({}))
+                          alert(`파일 탐색기를 열 수 없습니다: ${data.error || resp.statusText}`)
+                        }
+                      } catch {
+                        alert("파일 탐색기를 열 수 없습니다.")
+                      } finally {
+                        btn.disabled = false
+                      }
                     }}
                     title="파일 탐색기로 열기"
                   >
@@ -1796,6 +1808,26 @@ export default function App() {
                     <span className="project-list-name" title={p.worktree}>
                       {p.name || p.worktree.split(/[\\/]/).pop()}
                     </span>
+                    <button
+                      className="project-list-explorer-btn"
+                      title={`탐색기로 열기: ${p.worktree}`}
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        try {
+                          const resp = await fetch("/api/open-in-explorer", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
+                            body: JSON.stringify({ path: p.worktree }),
+                          })
+                          if (!resp.ok) {
+                            const data = await resp.json().catch(() => ({}))
+                            alert(`탐색기를 열 수 없습니다: ${data.error || resp.statusText}`)
+                          }
+                        } catch {
+                          alert("탐색기를 열 수 없습니다.")
+                        }
+                      }}
+                    >📂</button>
                   </div>
                 ))}
               </div>

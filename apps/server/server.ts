@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "url"
 import { createRequire } from "module"
 import { extractSymbols } from "./symbolExtractor.js"
 import { deflateRawSync, inflateRawSync } from "zlib"
-import { execSync, spawn } from "child_process"
+import { exec, execSync, spawn } from "child_process"
 
 const _require = createRequire(import.meta.url)
 
@@ -572,15 +572,17 @@ app.get("/api/search", (req, res) => {
 })
 
 app.post("/api/open-in-explorer", (req, res) => {
-  const root = getSessionRoot(req)
-  if (!root) return res.status(400).json({ error: "no project root" })
+  const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
+  if (!targetPath) return res.status(400).json({ error: "no path" })
+  if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
   try {
     if (process.platform === "win32") {
-      spawn("explorer", [root], { detached: true, stdio: "ignore" }).unref()
+      const normalized = path.normalize(targetPath)
+      spawn("explorer.exe", [normalized], { detached: true, stdio: "ignore" }).unref()
     } else if (process.platform === "darwin") {
-      spawn("open", [root], { detached: true, stdio: "ignore" }).unref()
+      spawn("open", [targetPath], { detached: true, stdio: "ignore" }).unref()
     } else {
-      spawn("xdg-open", [root], { detached: true, stdio: "ignore" }).unref()
+      spawn("xdg-open", [targetPath], { detached: true, stdio: "ignore" }).unref()
     }
     res.json({ ok: true })
   } catch (err: any) {

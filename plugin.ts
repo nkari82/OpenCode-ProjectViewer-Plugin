@@ -7,6 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let viewerProcess: any = null
 let currentPort = 4310
 let watchdogTimer: ReturnType<typeof setInterval> | null = null
+let isShuttingDown = false
 
 const PLUGIN_LOG = path.join(__dirname, "plugin.log")
 function pluginLog(msg: string) {
@@ -15,6 +16,21 @@ function pluginLog(msg: string) {
   console.log("[project-viewer]", msg)
 }
 pluginLog(`모듈 로드됨 __dirname=${__dirname} pid=${process.pid} execPath=${process.execPath}`)
+
+function handleShutdown(signal: string) {
+  if (isShuttingDown) return
+  isShuttingDown = true
+  pluginLog(`종료 시그널 수신: ${signal}`)
+  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
+  // 서버가 PARENT_PID 모니터링으로 스스로 종료할 때까지 잠시 대기 후 강제 종료
+  setTimeout(() => process.exit(0), 500)
+}
+
+process.on("SIGINT", () => handleShutdown("SIGINT"))
+process.on("SIGTERM", () => handleShutdown("SIGTERM"))
+if (process.platform === "win32") {
+  process.on("SIGBREAK", () => handleShutdown("SIGBREAK"))
+}
 
 function viewerUrl(pathname = "") {
   return `http://127.0.0.1:${currentPort}${pathname}`
@@ -194,6 +210,7 @@ async function syncProjectToViewer(worktree: string) {
 function startWatchdog() {
   if (watchdogTimer) return
   watchdogTimer = setInterval(async () => {
+    if (isShuttingDown) return
     if (!(await pingServer())) {
       pluginLog("서버 다운, 재시작...")
       startViewerPromise = null
@@ -201,9 +218,10 @@ function startWatchdog() {
       await startViewerServer().catch(() => {})
     }
   }, 30_000)
+  watchdogTimer.unref()
 }
 
-const plugin = async (ctx?: any) => {
+const plugin = async (input?: any, _options?: any): Promise<any> => {
   pluginLog(`plugin() 호출됨`)
 
   const ready = await startViewerServer().catch(err => {
@@ -212,46 +230,46 @@ const plugin = async (ctx?: any) => {
   })
   startWatchdog()
 
-  if (!ctx) return {}
+  if (!input) return {}
 
-  // 현재 프로젝트를 뷰어에 자동 동기화
+  // 현재 프로젝트를 뷰어에 자동 동기화 (루트 경로 / 는 유효하지 않으므로 건너뜀)
   if (ready) {
-    const worktree = ctx.state?.path?.worktree
-    if (worktree) await syncProjectToViewer(worktree)
+    const worktree = input.worktree
+    if (worktree && worktree !== "/" && worktree.length > 2) {
+      await syncProjectToViewer(worktree)
+    }
   }
 
-  // 프로젝트 변경 시 자동 동기화
-  try {
-    ctx.event?.on?.("project.updated", async (event: any) => {
+  return {
+    // 이벤트로 프로젝트 변경 감지
+    event: async ({ event }: any) => {
       const worktree = event?.properties?.worktree
-      if (worktree) await syncProjectToViewer(worktree)
-    })
-  } catch {}
+      if (worktree && worktree !== "/" && worktree.length > 2) {
+        await syncProjectToViewer(worktree)
+      }
+    },
 
-  // /open-view 슬래시 커맨드 등록
-  try {
-    ctx.command?.register?.(() => [
-      {
-        title: "Open Project Viewer",
-        value: "open-view",
+    // config hook으로 /open-view 커맨드 등록 (OpenCode가 호출할 때마다 실행되므로 로그 제거)
+    config: async (config: any) => {
+      if (!config.command) config.command = {}
+      config.command["open-view"] = {
         description: "브라우저에서 프로젝트 뷰어 열기 (localhost:4310)",
-        category: "Plugin",
-        slash: { name: "open-view" },
-        onSelect: async () => {
-          const worktree = ctx.state?.path?.worktree
-          if (worktree && await pingServer()) {
-            await syncProjectToViewer(worktree)
-          }
-          openBrowser(viewerUrl())
-        },
-      },
-    ])
-    pluginLog("/open-view 커맨드 등록됨")
-  } catch (err) {
-    pluginLog(`커맨드 등록 실패: ${err}`)
-  }
+        template: "The user ran /open-view. The project viewer is opening in the browser at http://localhost:4310. Confirm this in one short sentence.",
+      }
+    },
 
-  return {}
+    // /open-view 실행 시 브라우저 열기
+    "command.execute.before": async (cmdInput: any, _output: any) => {
+      if (cmdInput.command === "open-view") {
+        const worktree = input.worktree
+        if (worktree && worktree !== "/" && worktree.length > 2 && await pingServer()) {
+          await syncProjectToViewer(worktree)
+        }
+        openBrowser(viewerUrl())
+        pluginLog(`/open-view 실행: 브라우저 열기 ${viewerUrl()}`)
+      }
+    },
+  }
 }
 
 export default plugin

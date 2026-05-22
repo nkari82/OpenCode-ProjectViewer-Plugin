@@ -26,3 +26,8 @@ lerna-debug.log*
 
 # OS
 Thumbs.db
+
+# runtime
+viewer-root.json
+plugin.log
+server.log
