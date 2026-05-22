@@ -77,16 +77,13 @@ function _listOpencodeProjects() {
     }
     let db = null;
     try {
-        // Open without readOnly so we can enable WAL mode — this prevents our reads
-        // from holding a SHARED lock that blocks OpenCode's write transactions.
         // @ts-ignore
         db = new DatabaseSync(dbPath);
-        // WAL mode lets readers and writers proceed concurrently (no SHARED-lock contention).
+        // WAL mode: readers and writers proceed concurrently without SHARED-lock contention
         try {
             db.prepare("PRAGMA journal_mode=WAL").get();
         }
         catch { }
-        // Immediately release any implicit write-lock from the PRAGMA above.
         try {
             db.prepare("PRAGMA wal_checkpoint(PASSIVE)").get();
         }
@@ -140,7 +137,6 @@ function _listOpencodeProjects() {
     }
 }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Works for both tsx source (apps/server/) and compiled output (apps/server/dist/)
 const serverPkgDir = path.basename(__dirname) === "dist" ? path.dirname(__dirname) : __dirname;
 const DIST_DIR = path.join(serverPkgDir, "../client/dist");
 const INDEX_HTML = path.join(DIST_DIR, "index.html");
@@ -175,11 +171,8 @@ function shutdownServer(reason, details) {
         return;
     shuttingDown = true;
     console.log("[viewer] shutdown:", reason, details || "");
-    // Force-close all keep-alive connections so the port is released immediately.
-    // Graceful drain is unnecessary here — we're exiting anyway.
     try {
         if (httpServer) {
-            // Node 18.2+ API; harmless if unavailable
             if (typeof httpServer.closeAllConnections === "function") {
                 httpServer.closeAllConnections();
             }
@@ -187,9 +180,17 @@ function shutdownServer(reason, details) {
         }
     }
     catch { }
-    // Small delay to let the OS release the port before the process exits,
-    // giving a new server instance a clean bind.
-    setTimeout(() => process.exit(0), 150);
+    // Give a 2s window for a restarted parent (e.g. NSSM service restart) to register its PID.
+    // If a new parent registers before exit fires, cancel the shutdown and restart the listener.
+    setTimeout(() => {
+        if (parentPids.size > 0) {
+            console.log("[viewer] shutdown cancelled: new parent registered");
+            shuttingDown = false;
+            startServer();
+            return;
+        }
+        process.exit(0);
+    }, 2_000);
 }
 const PORT = Number(process.env.PORT) || 4310;
 const PARENT_PID = Number(process.env.PARENT_PID) || 0;
@@ -208,7 +209,6 @@ function persistRoot(root) {
 }
 let ROOT = loadPersistedRoot();
 const sessionRoots = new Map();
-// File response cache — keyed by absolute path, invalidated when mtime/size changes
 const FILE_CACHE_MAX = 200;
 const fileCache = new Map();
 function getFileCache(filePath) {
@@ -236,7 +236,6 @@ function setFileCache(filePath, result) {
     }
     catch { }
 }
-// Refresh sequence — increments when files change so clients can invalidate their caches
 let refreshSeq = 0;
 function getSessionRoot(req) {
     const sid = req.headers["x-session-id"];
@@ -244,7 +243,6 @@ function getSessionRoot(req) {
         return sessionRoots.get(sid);
     return ROOT;
 }
-// lineNumbers is a valid Shiki runtime option but missing from v1.29 types
 function shikiHtml(h, code, lang) {
     return h.codeToHtml(code, { lang, theme: "github-dark", lineNumbers: true });
 }
@@ -367,7 +365,6 @@ function safeNoteResolve(filePath, root) {
 }
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", ".next", ".turbo", ".cache", ".pytest_cache", ".notes"]);
 const DIR_FILE_LIMIT = 500;
-// Per-directory listing cache — stores raw dirs/files before slicing
 const TREE_CACHE_MAX = 150;
 const treeListCache = new Map();
 function getRawDirContents(dir) {
@@ -393,7 +390,6 @@ function setRawDirCache(dir, dirs, files) {
     }
     catch { }
 }
-// Shallow (non-recursive) directory listing with offset-based pagination
 function walkShallow(dir, offset = 0) {
     let contents = getRawDirContents(dir);
     if (!contents) {
@@ -447,6 +443,8 @@ function walkShallow(dir, offset = 0) {
     return result;
 }
 app.get("/api/ping", (_, res) => {
+    if (shuttingDown)
+        return res.status(503).json({ ok: false, reason: "shutting down" });
     res.json({ ok: true });
 });
 app.get("/api/root", (req, res) => {
@@ -570,12 +568,33 @@ app.get("/api/projects", (req, res) => {
     if (req.query.refresh === "1")
         projectsCache = null;
     const result = listOpencodeProjects();
+    const currentRoot = getSessionRoot(req);
+    let projects = result.projects;
+    if (currentRoot) {
+        const norm = (p) => path.resolve(p).replace(/[/\\]+$/, "");
+        const currentNorm = norm(currentRoot);
+        const inDb = projects.some(p => norm(p.worktree) === currentNorm);
+        if (!inDb && fs.existsSync(currentRoot)) {
+            projects = [
+                {
+                    id: `unregistered:${currentRoot}`,
+                    worktree: currentRoot,
+                    name: path.basename(currentRoot),
+                    vcs: null,
+                    iconColor: null,
+                    timeUpdated: 0,
+                    timeCreated: 0,
+                },
+                ...projects,
+            ];
+        }
+    }
     res.json({
         ok: result.ok,
         error: result.error || null,
         dbPath: result.dbPath || null,
-        currentRoot: getSessionRoot(req),
-        projects: result.projects,
+        currentRoot,
+        projects,
     });
 });
 app.post("/api/open-project", (req, res) => {
@@ -1195,7 +1214,6 @@ function startServer() {
         shutdownServer("listen error", err?.message);
     });
 }
-// Track all plugin parent PIDs — server shuts down only when every parent is gone.
 const parentPids = new Set();
 if (PARENT_PID)
     parentPids.add(PARENT_PID);
@@ -1217,8 +1235,13 @@ if (PARENT_PID) {
                 parentPids.delete(pid);
             }
         }
-        if (parentPids.size === 0)
-            shutdownServer("all parent processes gone", null);
+        if (parentPids.size === 0) {
+            // 15s grace: covers NSSM restart cycles where new service starts after old PID dies
+            setTimeout(() => {
+                if (parentPids.size === 0)
+                    shutdownServer("all parent processes gone", null);
+            }, 15_000);
+        }
     }, 5_000);
     pidTimer.unref();
 }
