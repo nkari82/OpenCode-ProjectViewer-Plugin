@@ -63,4 +63,4 @@ Key API routes:
 - Port is hardcoded to **4310** — do not change without updating `plugin.ts` and docs
 - File access is always relative to the active project root; `safeResolve()` must be used for all `fs` operations on user-supplied paths
 - The client polling interval controls perceived responsiveness; it currently polls every ~5 seconds
-- `apps/client/dist/` is committed and must be rebuilt (`pnpm build`) before the server can serve updated UI
+- `apps/client/dist/` and `apps/server/dist/` are **not committed** (covered by `.gitignore`); run `pnpm build` after cloning or changing source before the server can serve the UI
