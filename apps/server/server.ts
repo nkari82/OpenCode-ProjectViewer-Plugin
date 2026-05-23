@@ -196,24 +196,22 @@ function shutdownServer(reason: string, details: string | null) {
 
   console.log("[viewer] shutdown:", reason, details || "")
 
-  try {
-    if (httpServer) {
-      if (typeof (httpServer as any).closeAllConnections === "function") {
-        (httpServer as any).closeAllConnections()
-      }
-      httpServer.close()
-    }
-  } catch {}
-
-  // Give a 2s window for a restarted parent (e.g. NSSM service restart) to register its PID.
-  // If a new parent registers before exit fires, cancel the shutdown and restart the listener.
+  // Keep HTTP listener alive during the 2s window — register-pid must be reachable for
+  // NSSM restart cancellation. Closing the listener first made the window unreachable.
   setTimeout(() => {
     if (parentPids.size > 0) {
       console.log("[viewer] shutdown cancelled: new parent registered")
       shuttingDown = false
-      startServer()
       return
     }
+    try {
+      if (httpServer) {
+        if (typeof (httpServer as any).closeAllConnections === "function") {
+          (httpServer as any).closeAllConnections()
+        }
+        httpServer.close()
+      }
+    } catch {}
     process.exit(0)
   }, 2_000)
 }
@@ -598,6 +596,47 @@ app.post("/api/open-in-explorer", (req, res) => {
     } else {
       spawn("xdg-open", [targetPath], { detached: true, stdio: "ignore" }).unref()
     }
+    res.json({ ok: true })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post("/api/open-terminal", (req, res) => {
+  const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
+  if (!targetPath) return res.status(400).json({ error: "no path" })
+  if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
+  try {
+    if (process.platform === "win32") {
+      const normalized = path.normalize(targetPath)
+      // Windows Terminal → PowerShell → cmd 순서로 시도
+      try {
+        spawn("wt.exe", ["-d", normalized], { detached: true, stdio: "ignore" }).unref()
+      } catch {
+        try {
+          spawn("powershell.exe", ["-NoExit", "-Command", `Set-Location '${normalized.replace(/'/g, "''")}'`], { detached: true, stdio: "ignore" }).unref()
+        } catch {
+          spawn("cmd.exe", ["/k", `cd /d "${normalized}"`], { detached: true, stdio: "ignore" }).unref()
+        }
+      }
+    } else if (process.platform === "darwin") {
+      spawn("open", ["-a", "Terminal", targetPath], { detached: true, stdio: "ignore" }).unref()
+    } else {
+      const term = process.env.TERMINAL || "xterm"
+      spawn(term, [], { cwd: targetPath, detached: true, stdio: "ignore" }).unref()
+    }
+    res.json({ ok: true })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post("/api/open-vscode", (req, res) => {
+  const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
+  if (!targetPath) return res.status(400).json({ error: "no path" })
+  if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
+  try {
+    spawn("code", [targetPath], { detached: true, stdio: "ignore", shell: true }).unref()
     res.json({ ok: true })
   } catch (err: any) {
     res.status(500).json({ error: err.message })
@@ -1284,6 +1323,10 @@ app.post("/api/register-pid", (req, res) => {
   if (pid > 0) {
     parentPids.add(pid)
     console.log("[viewer] registered pid:", pid, "total:", parentPids.size)
+    if (shuttingDown) {
+      console.log("[viewer] shutdown preempted by new pid:", pid)
+      shuttingDown = false
+    }
   }
   res.json({ ok: true, pids: parentPids.size })
 })

@@ -13,7 +13,8 @@
     "start": "node apps/server/dist/server.js",
     "dev:server": "pnpm --filter viewer-server run dev",
     "dev:client": "pnpm --filter viewer-client run dev",
-    "dev": "pnpm -r --parallel run dev"
+    "dev": "pnpm -r --parallel run dev",
+    "test:restart": "powershell -ExecutionPolicy Bypass -File scripts/test-nssm-restart.ps1"
   },
   "devDependencies": {
     "typescript": "^5.0.0"

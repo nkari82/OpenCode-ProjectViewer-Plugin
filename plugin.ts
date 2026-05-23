@@ -20,9 +20,10 @@ pluginLog(`모듈 로드됨 __dirname=${__dirname} pid=${process.pid} execPath=$
 function handleShutdown(signal: string) {
   if (isShuttingDown) return
   isShuttingDown = true
-  pluginLog(`종료 시그널 수신: ${signal}`)
+  pluginLog(`종료 시그널 수신: ${signal} — 플러그인 리소스 정리, OpenCode 자체 종료에 위임`)
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
-  setTimeout(() => process.exit(0), 500)
+  // process.exit() 호출 금지: OpenCode(Bun) HTTP 서버가 Chrome 연결을
+  // graceful close할 시간을 확보해야 좀비 소켓이 생기지 않음
 }
 
 process.on("SIGINT", () => handleShutdown("SIGINT"))
@@ -48,7 +49,8 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
 async function pingServer() {
   try {
     const res = await fetchWithTimeout(viewerUrl("/api/ping"), {})
-    return res.ok
+    // 503 = server alive but shutting down; still reachable for register-pid
+    return res.status === 200 || res.status === 503
   } catch {
     return false
   }
@@ -114,7 +116,7 @@ async function startViewerServer() {
     pluginLog("startViewerServer() 진입")
 
     if (await pingServer()) {
-      pluginLog("서버 이미 실행 중, PID 등록 후 재사용")
+      pluginLog("기존 서버 감지 — PID 등록 시도")
       try {
         const regRes = await fetchWithTimeout(viewerUrl("/api/register-pid"), {
           method: "POST",
@@ -122,13 +124,27 @@ async function startViewerServer() {
           body: JSON.stringify({ pid: process.pid }),
         })
         if (regRes && regRes.ok) {
+          pluginLog("PID 등록 성공 — 서버 재사용")
           return true
         }
-        pluginLog("register-pid 실패 (서버 종료 중), 새 서버 스폰")
+        // register-pid 실패 = 서버가 2s 취소 창 안에 있음, 잠시 대기 후 재시도
+        pluginLog("register-pid 실패 — 2.5s 후 재시도")
+        await new Promise(r => setTimeout(r, 2500))
+        if (await pingServer()) {
+          const retry = await fetchWithTimeout(viewerUrl("/api/register-pid"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pid: process.pid }),
+          })
+          if (retry && retry.ok) {
+            pluginLog("PID 재등록 성공 — 서버 재사용")
+            return true
+          }
+        }
+        pluginLog("register-pid 재시도 실패 — 새 서버 스폰")
       } catch {
-        pluginLog("register-pid 오류, 새 서버 스폰")
+        pluginLog("register-pid 오류 — 새 서버 스폰")
       }
-      // Fall through to spawn a fresh server
     }
 
     pluginLog(`포트 ${currentPort} 킬 중...`)
@@ -174,6 +190,7 @@ async function startViewerServer() {
     })
 
     for (let i = 0; i < 60; ++i) {
+      if (isShuttingDown) return false
       if (await pingServer()) {
         pluginLog(`서버 준비 완료 (${i * 0.5}s)`)
         return true
