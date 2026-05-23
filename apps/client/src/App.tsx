@@ -1749,6 +1749,48 @@ export default function App() {
                     📂
                   </button>
                   <button
+                    className="project-note-btn"
+                    onClick={async (e) => {
+                      const btn = e.currentTarget
+                      btn.disabled = true
+                      try {
+                        const resp = await fetch("/api/open-terminal", { method: "POST", headers: { "X-Session-Id": SESSION_ID } })
+                        if (!resp.ok) {
+                          const data = await resp.json().catch(() => ({}))
+                          alert(`터미널을 열 수 없습니다: ${data.error || resp.statusText}`)
+                        }
+                      } catch {
+                        alert("터미널을 열 수 없습니다.")
+                      } finally {
+                        btn.disabled = false
+                      }
+                    }}
+                    title="터미널로 열기"
+                  >
+                    ⌨️
+                  </button>
+                  <button
+                    className="project-note-btn"
+                    onClick={async (e) => {
+                      const btn = e.currentTarget
+                      btn.disabled = true
+                      try {
+                        const resp = await fetch("/api/open-vscode", { method: "POST", headers: { "X-Session-Id": SESSION_ID } })
+                        if (!resp.ok) {
+                          const data = await resp.json().catch(() => ({}))
+                          alert(`VS Code를 열 수 없습니다: ${data.error || resp.statusText}`)
+                        }
+                      } catch {
+                        alert("VS Code를 열 수 없습니다.")
+                      } finally {
+                        btn.disabled = false
+                      }
+                    }}
+                    title="VS Code로 열기"
+                  >
+                    {'</>'}
+                  </button>
+                  <button
                     className={`project-note-btn${treeRefreshing ? " spinning" : ""}`}
                     onClick={() => void refreshTree()}
                     title="파일 트리 새로고침"
