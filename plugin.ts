@@ -232,7 +232,12 @@ function startWatchdog() {
   if (watchdogTimer) return
   watchdogTimer = setInterval(async () => {
     if (isShuttingDown) return
-    if (!(await pingServer())) {
+    // Use a longer timeout than pingServer's default (1.5s) to reduce false positives
+    // when the server is busy with large file processing (Shiki, PDF).
+    const alive = await fetchWithTimeout(viewerUrl("/api/ping"), {}, 4000)
+      .then(r => r.status === 200 || r.status === 503)
+      .catch(() => false)
+    if (!alive) {
       pluginLog("서버 다운, 재시작...")
       startViewerPromise = null
       viewerProcess = null

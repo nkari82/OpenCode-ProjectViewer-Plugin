@@ -189,6 +189,7 @@ app.use(express.json())
 
 let httpServer: ReturnType<typeof app.listen> | null = null
 let shuttingDown = false
+const openSockets = new Set<import("net").Socket>()
 
 function shutdownServer(reason: string, details: string | null) {
   if (shuttingDown) return
@@ -204,13 +205,14 @@ function shutdownServer(reason: string, details: string | null) {
       shuttingDown = false
       return
     }
+    // Forcefully destroy all open connections so the port is released immediately.
+    // Without this, Chrome keep-alive sockets hold the port after process exit.
+    for (const sock of openSockets) {
+      try { sock.destroy() } catch {}
+    }
+    openSockets.clear()
     try {
-      if (httpServer) {
-        if (typeof (httpServer as any).closeAllConnections === "function") {
-          (httpServer as any).closeAllConnections()
-        }
-        httpServer.close()
-      }
+      if (httpServer) httpServer.close()
     } catch {}
     process.exit(0)
   }, 2_000)
@@ -1297,6 +1299,11 @@ function startServer() {
     console.log(`[viewer] running at http://0.0.0.0:${PORT} (also http://127.0.0.1:${PORT})`)
     console.log(`[viewer] mode: standalone`)
     startRetries = 0
+  })
+
+  httpServer.on("connection", (socket) => {
+    openSockets.add(socket)
+    socket.once("close", () => openSockets.delete(socket))
   })
 
   httpServer.on("error", (err: any) => {
