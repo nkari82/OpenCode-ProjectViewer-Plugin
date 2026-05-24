@@ -1273,15 +1273,23 @@ function killProcessOnPort(port: number) {
   try {
     if (process.platform === "win32") {
       try {
-        const output = execSync(`netstat -ano | findstr :${port}`, { encoding: "utf8" })
+        // findstr 부분 문자열 매칭 대신 전체 netstat 출력을 파싱하여 정확한 포트 비교.
+        // 예: findstr :4310 은 :43100 도 매칭하여 VPN/RDP 관련 프로세스를 잘못 종료할 수 있음.
+        const output = execSync(`netstat -ano`, { encoding: "utf8" })
         for (const line of output.split("\n")) {
           const trimmed = line.trim()
           if (!trimmed.includes("LISTENING")) continue
           const parts = trimmed.split(/\s+/)
+          // netstat 포맷: Proto LocalAddr ForeignAddr State PID
+          if (parts.length < 5) continue
+          const localAddr = parts[1] || ""
+          // 정확한 포트 매칭: ":4310"으로 끝나는지 확인 (":43100" 등 제외)
+          if (!localAddr.endsWith(`:${port}`)) continue
           const pid = parts[parts.length - 1]
-          if (pid && /^\d+$/.test(pid)) {
+          if (pid && /^\d+$/.test(pid) && parseInt(pid) !== process.pid) {
             console.log("[viewer:kill existing]", { port, pid })
-            try { execSync(`taskkill /pid ${pid} /f /t`, { stdio: "ignore" }) } catch {}
+            // /t (tree) 플래그 제거: 자식 프로세스 전체 트리 종료를 방지 (VPN/RDP 끊김 원인)
+            try { execSync(`taskkill /pid ${pid} /f`, { stdio: "ignore" }) } catch {}
           }
         }
       } catch {}
@@ -1344,10 +1352,11 @@ if (PARENT_PID) {
       try { process.kill(pid, 0) } catch { parentPids.delete(pid) }
     }
     if (parentPids.size === 0) {
-      // 15s grace: covers NSSM restart cycles where new service starts after old PID dies
+      // 120s grace: NSSM 재시작 후 브라우저가 4096에 재접속해 plugin()을 다시
+      // 호출하기까지 충분한 시간을 확보. 이 안에 register-pid가 오면 종료 취소.
       setTimeout(() => {
         if (parentPids.size === 0) shutdownServer("all parent processes gone", null)
-      }, 15_000)
+      }, 120_000)
     }
   }, 5_000)
   pidTimer.unref()

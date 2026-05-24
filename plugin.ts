@@ -8,6 +8,10 @@ let viewerProcess: any = null
 let currentPort = 4310
 let watchdogTimer: ReturnType<typeof setInterval> | null = null
 let isShuttingDown = false
+// 모든 fetch() 요청을 일괄 취소하는 글로벌 AbortController.
+// shutdown 시 abort()하면 Bun의 fetch connection pool이 즉시 해제되어
+// event loop가 자연 종료됨 (process.exit() 없이).
+let shutdownAbort = new AbortController()
 
 const PLUGIN_LOG = path.join(__dirname, "plugin.log")
 function pluginLog(msg: string) {
@@ -20,10 +24,13 @@ pluginLog(`모듈 로드됨 __dirname=${__dirname} pid=${process.pid} execPath=$
 function handleShutdown(signal: string) {
   if (isShuttingDown) return
   isShuttingDown = true
-  pluginLog(`종료 시그널 수신: ${signal} — 플러그인 리소스 정리, OpenCode 자체 종료에 위임`)
+  pluginLog(`종료 시그널 수신: ${signal} — 플러그인 리소스 정리`)
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
-  // process.exit() 호출 금지: OpenCode(Bun) HTTP 서버가 Chrome 연결을
-  // graceful close할 시간을 확보해야 좀비 소켓이 생기지 않음
+  // 모든 pending fetch()를 즉시 abort → Bun fetch connection pool 해제
+  // → event loop가 자연 종료 → OpenCode가 4096 포트를 올바르게 반환
+  // → NSSM이 새 OpenCode를 바인딩 문제 없이 시작 가능.
+  shutdownAbort.abort()
+  pluginLog("fetch 전체 취소 완료 — event loop 자연 종료 대기")
 }
 
 process.on("SIGINT", () => handleShutdown("SIGINT"))
@@ -39,10 +46,14 @@ function viewerUrl(pathname = "") {
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 1500) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  // shutdown 시 shutdownAbort.abort()가 이 요청도 즉시 취소
+  const onShutdown = () => controller.abort()
+  shutdownAbort.signal.addEventListener("abort", onShutdown, { once: true })
   try {
     return await fetch(url, { ...options, signal: controller.signal })
   } finally {
     clearTimeout(timer)
+    shutdownAbort.signal.removeEventListener("abort", onShutdown)
   }
 }
 
@@ -60,14 +71,21 @@ async function killProcessOnPort(port: number) {
   const { execSync } = await import("child_process")
   if (process.platform === "win32") {
     try {
-      const out = execSync(`netstat -ano | findstr :${port}`, { encoding: "utf8" })
+      // findstr 부분 문자열 매칭 대신 전체 netstat 출력을 파싱하여 정확한 포트 비교.
+      // 예: findstr :4310 은 :43100 도 매칭하여 VPN/RDP 관련 프로세스를 잘못 종료할 수 있음.
+      const out = execSync(`netstat -ano`, { encoding: "utf8" })
       for (const line of out.split("\n")) {
-        if (line.includes("LISTENING")) {
-          const parts = line.trim().split(/\s+/)
-          const pid = parts[parts.length - 1]
-          if (pid && pid !== "0") {
-            try { execSync(`taskkill /f /t /pid ${pid}`, { stdio: "ignore" }) } catch {}
-          }
+        if (!line.includes("LISTENING")) continue
+        const parts = line.trim().split(/\s+/)
+        // netstat 포맷: Proto LocalAddr ForeignAddr State PID
+        if (parts.length < 5) continue
+        const localAddr = parts[1] || ""
+        // 정확한 포트 매칭: ":4310"으로 끝나는지 확인 (":43100" 등 제외)
+        if (!localAddr.endsWith(`:${port}`)) continue
+        const pid = parts[parts.length - 1]
+        if (pid && /^\d+$/.test(pid) && pid !== "0" && parseInt(pid) !== process.pid) {
+          // /t (tree) 플래그 제거: 자식 프로세스 전체 트리 종료를 방지 (VPN/RDP 끊김 원인)
+          try { execSync(`taskkill /f /pid ${pid}`, { stdio: "ignore" }) } catch {}
         }
       }
     } catch {}
