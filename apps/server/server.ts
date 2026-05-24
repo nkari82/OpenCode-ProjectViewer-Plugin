@@ -1334,12 +1334,32 @@ const parentPids = new Set<number>()
 if (PARENT_PID) parentPids.add(PARENT_PID)
 
 app.post("/api/register-pid", (req, res) => {
-  const pid = Number(req.body?.pid)
-  if (pid > 0) {
-    parentPids.add(pid)
-    console.log("[viewer] registered pid:", pid, "total:", parentPids.size)
+  const newPid = Number(req.body?.pid)
+  if (newPid > 0) {
+    // 이전 OpenCode 프로세스가 아직 살아있으면 kill → zombie socket 방지.
+    // NSSM restart 시 이전 OpenCode(4096 점유)가 강제 kill 되지 않고 살아있는 경우를 처리.
+    for (const oldPid of [...parentPids]) {
+      if (oldPid === newPid) continue
+      let alive = false
+      try { process.kill(oldPid, 0); alive = true } catch {}
+      if (alive) {
+        console.log("[viewer] stale parent pid still alive, killing:", oldPid)
+        try {
+          if (process.platform === "win32") {
+            execSync(`taskkill /f /pid ${oldPid}`, { stdio: "ignore" })
+          } else {
+            process.kill(oldPid, "SIGTERM")
+          }
+        } catch {}
+      } else {
+        console.log("[viewer] stale parent pid already gone:", oldPid)
+      }
+      parentPids.delete(oldPid)
+    }
+    parentPids.add(newPid)
+    console.log("[viewer] registered pid:", newPid, "total:", parentPids.size)
     if (shuttingDown) {
-      console.log("[viewer] shutdown preempted by new pid:", pid)
+      console.log("[viewer] shutdown preempted by new pid:", newPid)
       shuttingDown = false
     }
   }

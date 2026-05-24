@@ -27,10 +27,18 @@ function handleShutdown(signal: string) {
   pluginLog(`종료 시그널 수신: ${signal} — 플러그인 리소스 정리`)
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
   // 모든 pending fetch()를 즉시 abort → Bun fetch connection pool 해제
-  // → event loop가 자연 종료 → OpenCode가 4096 포트를 올바르게 반환
-  // → NSSM이 새 OpenCode를 바인딩 문제 없이 시작 가능.
   shutdownAbort.abort()
-  pluginLog("fetch 전체 취소 완료 — event loop 자연 종료 대기")
+  pluginLog("fetch 전체 취소 완료 — 1000ms 후 강제 종료")
+  // Bun/OpenCode 자체 event loop(WebSocket·DB)는 plugin.ts가 제어할 수 없으므로,
+  // abort() 후 1000ms 내에 자연 종료되지 않으면 process.exit(0)으로 강제 종료.
+  // - NSSM AppStopMethodConsole 기본 타임아웃(1500ms)보다 짧아야
+  //   TerminateProcess(→ Windows zombie socket)가 호출되기 전에 정상 종료됨.
+  // - process.exit(0)은 정상 종료(ExitProcess)이므로 OS가 4096 소켓을 즉시 반환.
+  // - abort() 이후라 Bun fetch connection pool이 이미 해제된 상태.
+  setTimeout(() => {
+    pluginLog("강제 종료 (1000ms timeout) — process.exit(0)")
+    process.exit(0)
+  }, 1000)
 }
 
 process.on("SIGINT", () => handleShutdown("SIGINT"))
