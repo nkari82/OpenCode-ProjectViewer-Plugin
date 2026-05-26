@@ -286,7 +286,10 @@ function startWatchdog() {
 const plugin = async (input?: any, _options?: any): Promise<any> => {
   pluginLog(`plugin() 호출됨`)
 
-  const ready = await startViewerServer().catch(err => {
+  // OpenCode를 블로킹하지 않도록 서버 시작을 백그라운드로 처리.
+  // 이전: await startViewerServer() → 서버 부팅 시 최대 30초 OpenCode 블록.
+  // 수정: fire-and-forget, 서버 준비 완료 후 초기 동기화도 백그라운드 체인.
+  const startupPromise = startViewerServer().catch(err => {
     pluginLog(`Server startup error: ${err}`)
     return false
   })
@@ -294,12 +297,13 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
 
   if (!input) return {}
 
-  if (ready) {
-    const worktree = input.worktree
-    if (worktree && worktree !== "/" && worktree.length > 2) {
-      latestWorktree = worktree
-      await syncProjectToViewer(worktree)
-    }
+  const worktree = input.worktree
+  if (worktree && worktree !== "/" && worktree.length > 2) {
+    latestWorktree = worktree
+    // 서버 준비 완료 후 동기화 — await 없이 백그라운드 실행
+    startupPromise.then(ready => {
+      if (ready) syncProjectToViewer(worktree).catch(() => {})
+    })
   }
 
   return {
@@ -307,7 +311,9 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
       const worktree = event?.properties?.worktree
       if (worktree && worktree !== "/" && worktree.length > 2) {
         latestWorktree = worktree
-        await syncProjectToViewer(worktree)
+        // fire-and-forget: OpenCode 이벤트 핸들러를 블로킹하지 않음.
+        // 이전: await syncProjectToViewer() → 이벤트마다 최대 2초 블록.
+        syncProjectToViewer(worktree).catch(() => {})
       }
     },
 
@@ -321,12 +327,16 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
 
     "command.execute.before": async (cmdInput: any, _output: any) => {
       if (cmdInput.command === "open-view") {
-        const worktree = latestWorktree || input.worktree
-        if (worktree && worktree !== "/" && worktree.length > 2 && await pingServer()) {
-          await syncProjectToViewer(worktree)
-        }
+        // 브라우저를 즉시 열고, 동기화는 백그라운드로 처리.
+        // 이전: await pingServer() + await syncProjectToViewer() → 최대 3.5초 대기 후 브라우저 오픈.
         openBrowser(viewerUrl())
         pluginLog(`/open-view 실행: 브라우저 열기 ${viewerUrl()}`)
+        const worktree = latestWorktree || input.worktree
+        if (worktree && worktree !== "/" && worktree.length > 2) {
+          pingServer().then(alive => {
+            if (alive) syncProjectToViewer(worktree).catch(() => {})
+          })
+        }
       }
     },
   }
