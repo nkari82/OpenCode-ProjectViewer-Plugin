@@ -585,127 +585,91 @@ app.get("/api/search", (req, res) => {
   }
 })
 
-// ─── Interactive-session launcher (Windows Session 0 → user desktop) ────────
-// This server runs inside Windows Session 0 (NSSM service context).
-// Processes spawned directly from Session 0 are invisible on the user's desktop.
-// schtasks /create /IT routes the launched process into the logged-on user's
-// interactive desktop session.
+// ─── Client-side URI launcher (Session 0 → Session 1 bypass) ────────────────
+// Root cause: this server runs in Windows Session 0 (NSSM service).
+// schtasks /IT "attempted to run" but never executed because the Task Scheduler
+// cannot bridge from Session 0 to Session 1 without admin/SE_TCB privileges.
 //
-// Zombie-socket safety: ALL schtasks calls use execFile (async callback),
-// never execSync.  The event loop is never blocked, so shutdown signals are
-// handled immediately and port 4310 is released without delay.
-function encodePsCommand(script: string): string {
-  // UTF-16LE base64 for PowerShell -EncodedCommand: avoids all quoting issues.
-  return Buffer.from(script, "utf16le").toString("base64")
-}
+// Fix: register custom URI schemes in HKCU so the *browser* (Session 1) opens
+// the app directly.  Routes return { ok:true, uri:"viewer-explore:///..." } and
+// the client does a hidden <a>.click() — the browser calls ShellExecute in
+// Session 1, which launches the correct app in the user's interactive session.
+//
+// Zombie-socket safety: reg.exe calls are async (execFile, not execSync).
+// ─────────────────────────────────────────────────────────────────────────────
+function registerWindowsProtocolHandlers(): void {
+  if (process.platform !== "win32" || shuttingDown) return
+  const psExe = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
 
-function launchInUserSession(psScript: string): Promise<void> {
-  if (shuttingDown) return Promise.resolve()
-  const encoded = encodePsCommand(psScript)
-  // /tr value: powershell.exe reads the script from the base64 blob
-  const trValue = `powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand ${encoded}`
-  // Unique task name — avoids collisions when user clicks rapidly
-  const taskName = `ViewerOpen_${Date.now()}_${Math.floor(Math.random() * 90000 + 10000)}`
-  // Sanitise USERNAME from the service environment (set by Windows for the
-  // account the service runs as — e.g. "NX3GAMES" — so no /ru password needed
-  // because /IT only runs when that user is already logged on interactively).
-  const username = (process.env.USERNAME ?? process.env.USER ?? "").replace(/[^\w\\.-]/g, "")
-
-  return new Promise<void>((resolve) => {
-    const createArgs = [
-      "/create", "/f",
-      "/tn", taskName,
-      "/sc", "onstart",   // /sc onstart needs no /sd or locale-specific date
-      "/it",              // interactive: run in the logged-on user's desktop
-      "/tr", trValue,
-    ]
-    if (username) createArgs.push("/ru", username)
-
-    execFile("schtasks.exe", createArgs, (createErr) => {
-      if (createErr) {
-        console.log("[viewer] schtasks create failed:", createErr.message)
-        resolve()
-        return
-      }
-      execFile("schtasks.exe", ["/run", "/tn", taskName], (runErr) => {
-        if (runErr) console.log("[viewer] schtasks run failed:", runErr.message)
-        resolve()
-        // Async cleanup — fire-and-forget, never blocks shutdown
-        setTimeout(() => execFile("schtasks.exe", ["/delete", "/f", "/tn", taskName], () => {}), 5000)
+  const register = (scheme: string, handlerCmd: string) => {
+    const base = `HKCU\\Software\\Classes\\${scheme}`
+    const cmdKey = `${base}\\shell\\open\\command`
+    // Chain three reg.exe calls — each is async/non-blocking
+    execFile("reg.exe", ["add", base, "/ve", "/d", `URL:${scheme}`, "/f"], (e1) => {
+      if (e1) { console.log(`[viewer] register ${scheme}:// (1) failed:`, e1.message); return }
+      execFile("reg.exe", ["add", base, "/v", "URL Protocol", "/t", "REG_SZ", "/d", "", "/f"], (e2) => {
+        if (e2) { console.log(`[viewer] register ${scheme}:// (2) failed:`, e2.message); return }
+        execFile("reg.exe", ["add", cmdKey, "/ve", "/d", handlerCmd, "/f"], (e3) => {
+          if (e3) console.log(`[viewer] register ${scheme}:// (3) failed:`, e3.message)
+          else console.log(`[viewer] registered protocol: ${scheme}://`)
+        })
       })
     })
-  })
-}
-// ─────────────────────────────────────────────────────────────────────────────
+  }
 
-app.post("/api/open-in-explorer", async (req, res) => {
+  // viewer-explore:///C:/path → explorer.exe C:\path
+  // [Uri]::new('viewer-explore:///C:/path').LocalPath = '/C:/path', TrimStart = 'C:/path'
+  register("viewer-explore",
+    `"${psExe}" -NonInteractive -WindowStyle Hidden -Command "Start-Process 'explorer.exe' -ArgumentList @(([Uri]::new('%1')).LocalPath.TrimStart('/'))"`
+  )
+
+  // viewer-terminal:///C:/path → wt.exe -d C:\path  OR  powershell.exe Set-Location
+  register("viewer-terminal",
+    `"${psExe}" -NonInteractive -WindowStyle Hidden -Command "$p=([Uri]::new('%1')).LocalPath.TrimStart('/'); $wt=Get-Command wt.exe -EA SilentlyContinue; if($wt){Start-Process $wt.Source @('-d',$p)}else{Start-Process 'powershell.exe' @('-NoExit','-Command',\\"Set-Location '$p'\\")}"`
+  )
+}
+
+// Build a viewer-explore:// or viewer-terminal:// URI from a Windows path.
+// Uses forward slashes (URI convention) + encodeURI for spaces only.
+function toViewerUri(scheme: string, winPath: string): string {
+  const fwd = path.normalize(winPath).replace(/\\/g, "/")
+  return `${scheme}:///${encodeURI(fwd)}`
+}
+
+app.post("/api/open-in-explorer", (req, res) => {
   const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
   if (!targetPath) return res.status(400).json({ error: "no path" })
   if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
   if (process.platform === "win32") {
-    const escaped = path.normalize(targetPath).replace(/'/g, "''")
-    await launchInUserSession(`Start-Process 'explorer.exe' -ArgumentList @('${escaped}')`)
-  } else if (process.platform === "darwin") {
-    spawn("open", [targetPath], { detached: true, stdio: "ignore" }).unref()
-  } else {
-    spawn("xdg-open", [targetPath], { detached: true, stdio: "ignore" }).unref()
+    return res.json({ ok: true, uri: toViewerUri("viewer-explore", targetPath) })
   }
+  if (process.platform === "darwin") spawn("open", [targetPath], { detached: true, stdio: "ignore" }).unref()
+  else spawn("xdg-open", [targetPath], { detached: true, stdio: "ignore" }).unref()
   res.json({ ok: true })
 })
 
-app.post("/api/open-terminal", async (req, res) => {
+app.post("/api/open-terminal", (req, res) => {
   const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
   if (!targetPath) return res.status(400).json({ error: "no path" })
   if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
   if (process.platform === "win32") {
-    const escaped = path.normalize(targetPath).replace(/'/g, "''")
-    // Windows Terminal (wt) → PowerShell fallback; resolved via Get-Command
-    // (spawn errors are async events, not synchronous exceptions — no try/catch)
-    const psScript = `
-$d = '${escaped}'
-$wt = Get-Command wt.exe -ErrorAction SilentlyContinue
-if ($wt) {
-  Start-Process $wt.Source -ArgumentList @('-d', $d)
-} else {
-  Start-Process 'powershell.exe' -ArgumentList @('-NoExit', '-Command', "Set-Location '$d'")
-}
-`
-    await launchInUserSession(psScript)
-  } else if (process.platform === "darwin") {
-    spawn("open", ["-a", "Terminal", targetPath], { detached: true, stdio: "ignore" }).unref()
-  } else {
-    const term = process.env.TERMINAL || "xterm"
-    spawn(term, [], { cwd: targetPath, detached: true, stdio: "ignore" }).unref()
+    return res.json({ ok: true, uri: toViewerUri("viewer-terminal", targetPath) })
   }
+  if (process.platform === "darwin") spawn("open", ["-a", "Terminal", targetPath], { detached: true, stdio: "ignore" }).unref()
+  else spawn(process.env.TERMINAL || "xterm", [], { cwd: targetPath, detached: true, stdio: "ignore" }).unref()
   res.json({ ok: true })
 })
 
-app.post("/api/open-vscode", async (req, res) => {
+app.post("/api/open-vscode", (req, res) => {
   const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
   if (!targetPath) return res.status(400).json({ error: "no path" })
   if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
   if (process.platform === "win32") {
-    const escaped = path.normalize(targetPath).replace(/'/g, "''")
-    // Locate VS Code: user-install (LOCALAPPDATA) → system-install (ProgramFiles)
-    // → code.cmd in PATH → bare 'code' as last resort
-    const psScript = `
-$d = '${escaped}'
-$vsExe = @(
-  "$env:LOCALAPPDATA\\Programs\\Microsoft VS Code\\Code.exe",
-  "$env:ProgramFiles\\Microsoft VS Code\\Code.exe"
-) | Where-Object { Test-Path $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-if ($vsExe) {
-  Start-Process $vsExe -ArgumentList @($d)
-} else {
-  $cmd = Get-Command code.cmd -ErrorAction SilentlyContinue
-  if ($cmd) { Start-Process $cmd.Source -ArgumentList @($d) }
-  else { Start-Process 'code' -ArgumentList @($d) -ErrorAction SilentlyContinue }
-}
-`
-    await launchInUserSession(psScript)
-  } else {
-    spawn("code", [targetPath], { detached: true, stdio: "ignore", shell: true }).unref()
+    // vscode:// is registered by VS Code itself — browser opens it in Session 1 directly
+    const fwd = path.normalize(targetPath).replace(/\\/g, "/")
+    return res.json({ ok: true, uri: `vscode://file/${encodeURI(fwd)}` })
   }
+  spawn("code", [targetPath], { detached: true, stdio: "ignore", shell: true }).unref()
   res.json({ ok: true })
 })
 
@@ -1371,6 +1335,7 @@ function startServer() {
     console.log(`[viewer] running at http://0.0.0.0:${PORT} (also http://127.0.0.1:${PORT})`)
     console.log(`[viewer] mode: standalone`)
     startRetries = 0
+    registerWindowsProtocolHandlers()
   })
 
   httpServer.on("connection", (socket) => {

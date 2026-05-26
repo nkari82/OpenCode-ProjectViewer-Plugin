@@ -1734,10 +1734,9 @@ export default function App() {
                       btn.disabled = true
                       try {
                         const resp = await fetch("/api/open-in-explorer", { method: "POST", headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID }, body: JSON.stringify({ path: root }) })
-                        if (!resp.ok) {
-                          const data = await resp.json().catch(() => ({}))
-                          alert(`파일 탐색기를 열 수 없습니다: ${data.error || resp.statusText}`)
-                        }
+                        const data = await resp.json().catch(() => ({}))
+                        if (!resp.ok) alert(`파일 탐색기를 열 수 없습니다: ${data.error || resp.statusText}`)
+                        else if (data.uri) { const a = document.createElement("a"); a.href = data.uri; a.click() }
                       } catch {
                         alert("파일 탐색기를 열 수 없습니다.")
                       } finally {
@@ -1755,10 +1754,9 @@ export default function App() {
                       btn.disabled = true
                       try {
                         const resp = await fetch("/api/open-terminal", { method: "POST", headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID }, body: JSON.stringify({ path: root }) })
-                        if (!resp.ok) {
-                          const data = await resp.json().catch(() => ({}))
-                          alert(`터미널을 열 수 없습니다: ${data.error || resp.statusText}`)
-                        }
+                        const data = await resp.json().catch(() => ({}))
+                        if (!resp.ok) alert(`터미널을 열 수 없습니다: ${data.error || resp.statusText}`)
+                        else if (data.uri) { const a = document.createElement("a"); a.href = data.uri; a.click() }
                       } catch {
                         alert("터미널을 열 수 없습니다.")
                       } finally {
@@ -1776,10 +1774,9 @@ export default function App() {
                       btn.disabled = true
                       try {
                         const resp = await fetch("/api/open-vscode", { method: "POST", headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID }, body: JSON.stringify({ path: root }) })
-                        if (!resp.ok) {
-                          const data = await resp.json().catch(() => ({}))
-                          alert(`VS Code를 열 수 없습니다: ${data.error || resp.statusText}`)
-                        }
+                        const data = await resp.json().catch(() => ({}))
+                        if (!resp.ok) alert(`VS Code를 열 수 없습니다: ${data.error || resp.statusText}`)
+                        else if (data.uri) { const a = document.createElement("a"); a.href = data.uri; a.click() }
                       } catch {
                         alert("VS Code를 열 수 없습니다.")
                       } finally {
@@ -1878,10 +1875,9 @@ export default function App() {
                             headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
                             body: JSON.stringify({ path: p.worktree }),
                           })
-                          if (!resp.ok) {
-                            const data = await resp.json().catch(() => ({}))
-                            alert(`탐색기를 열 수 없습니다: ${data.error || resp.statusText}`)
-                          }
+                          const data = await resp.json().catch(() => ({}))
+                          if (!resp.ok) alert(`탐색기를 열 수 없습니다: ${data.error || resp.statusText}`)
+                          else if (data.uri) { const a = document.createElement("a"); a.href = data.uri; a.click() }
                         } catch {
                           alert("탐색기를 열 수 없습니다.")
                         }
