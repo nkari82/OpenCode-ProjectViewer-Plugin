@@ -627,6 +627,7 @@ function registerWindowsProtocolHandlers(): void {
   register("viewer-terminal",
     `"${psExe}" -NonInteractive -WindowStyle Hidden -Command "$p=([Uri]::new('%1')).LocalPath.TrimStart('/'); $wt=Get-Command wt.exe -EA SilentlyContinue; if($wt){Start-Process $wt.Source @('-d',$p)}else{Start-Process 'powershell.exe' @('-NoExit','-Command',\\"Set-Location '$p'\\")}"`
   )
+
 }
 
 // Build a viewer-explore:// or viewer-terminal:// URI from a Windows path.
