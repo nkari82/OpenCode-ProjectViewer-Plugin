@@ -27,18 +27,15 @@ function handleShutdown(signal: string) {
   pluginLog(`종료 시그널 수신: ${signal} — 플러그인 리소스 정리`)
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null }
   // 모든 pending fetch()를 즉시 abort → Bun fetch connection pool 해제
+  // ping loop 내 shutdownAbort 연결 sleep도 즉시 깨어남
   shutdownAbort.abort()
-  pluginLog("fetch 전체 취소 완료 — 1000ms 후 강제 종료")
-  // Bun/OpenCode 자체 event loop(WebSocket·DB)는 plugin.ts가 제어할 수 없으므로,
-  // abort() 후 1000ms 내에 자연 종료되지 않으면 process.exit(0)으로 강제 종료.
-  // - NSSM AppStopMethodConsole 기본 타임아웃(1500ms)보다 짧아야
-  //   TerminateProcess(→ Windows zombie socket)가 호출되기 전에 정상 종료됨.
-  // - process.exit(0)은 정상 종료(ExitProcess)이므로 OS가 4096 소켓을 즉시 반환.
-  // - abort() 이후라 Bun fetch connection pool이 이미 해제된 상태.
-  setTimeout(() => {
-    pluginLog("강제 종료 (1000ms timeout) — process.exit(0)")
-    process.exit(0)
-  }, 1000)
+  pluginLog("fetch 전체 취소 완료 — process.exit(0)")
+  // 즉시 종료: 1000ms 딜레이 제거.
+  // 이전 1000ms 대기는 "자연 종료 기다리기"였으나 Bun/OpenCode event loop는
+  // WebSocket·DB 때문에 자연 종료되지 않아 항상 process.exit(0)이 실행됐음.
+  // → 딜레이만큼 port 4096이 더 오래 점유되어 NSSM 재시작 시 ghost socket 유발.
+  // process.exit(0)은 정상 종료(ExitProcess)이므로 OS가 4096 소켓을 즉시 반환.
+  process.exit(0)
 }
 
 process.on("SIGINT", () => handleShutdown("SIGINT"))
@@ -76,6 +73,9 @@ async function pingServer() {
 }
 
 async function killProcessOnPort(port: number) {
+  // 종료 중에는 포트 킬 금지: execSync가 이벤트 루프를 블록킹하면
+  // shutdownAbort 전파 및 process.exit(0) 실행이 지연됨.
+  if (isShuttingDown) return
   const { execSync } = await import("child_process")
   if (process.platform === "win32") {
     try {
@@ -221,7 +221,14 @@ async function startViewerServer() {
         pluginLog(`서버 준비 완료 (${i * 0.5}s)`)
         return true
       }
-      await new Promise(r => setTimeout(r, 500))
+      // shutdownAbort에 연결된 sleep: abort() 시 즉시 깨어남
+      // (기존 plain setTimeout은 abort 신호를 무시해 shutdown 지연 유발)
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, 500)
+        if (shutdownAbort.signal.aborted) { clearTimeout(timer); resolve(); return }
+        const onAbort = () => { clearTimeout(timer); resolve() }
+        shutdownAbort.signal.addEventListener("abort", onAbort, { once: true })
+      })
     }
     pluginLog(`서버 30초 내 준비 안됨 (node: ${nodeExec})`)
     return false
@@ -264,6 +271,9 @@ function startWatchdog() {
       .then(r => r.status === 200 || r.status === 503)
       .catch(() => false)
     if (!alive) {
+      // 종료 중에는 재시작 금지: startViewerServer() 안의 killProcessOnPort(execSync)가
+      // 이벤트 루프를 블록킹해 process.exit(0) 실행을 지연시킬 수 있음.
+      if (isShuttingDown) return
       pluginLog("서버 다운, 재시작...")
       startViewerPromise = null
       viewerProcess = null

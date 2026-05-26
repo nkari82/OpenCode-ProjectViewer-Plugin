@@ -1372,11 +1372,13 @@ if (PARENT_PID) {
       try { process.kill(pid, 0) } catch { parentPids.delete(pid) }
     }
     if (parentPids.size === 0) {
-      // 120s grace: NSSM 재시작 후 브라우저가 4096에 재접속해 plugin()을 다시
-      // 호출하기까지 충분한 시간을 확보. 이 안에 register-pid가 오면 종료 취소.
+      // 25s grace: NSSM 재시작 후 새 OpenCode가 plugin()을 호출해 register-pid를
+      // 보내기까지 충분한 시간. opencode-start.ps1 기준 npm update(5s) + port wait(0-10s)
+      // + opencode 기동(3s) = 최대 ~20s → 25s는 안전 마진 포함.
+      // (구 120s → 25s: 불필요한 4310 포트 점유 최소화)
       setTimeout(() => {
         if (parentPids.size === 0) shutdownServer("all parent processes gone", null)
-      }, 120_000)
+      }, 25_000)
     }
   }, 5_000)
   pidTimer.unref()
