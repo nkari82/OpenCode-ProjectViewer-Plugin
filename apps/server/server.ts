@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "url"
 import { createRequire } from "module"
 import { extractSymbols } from "./symbolExtractor.js"
 import { deflateRawSync, inflateRawSync } from "zlib"
-import { exec, execSync, spawn } from "child_process"
+import { exec, execFile, execSync, spawn } from "child_process"
 
 const _require = createRequire(import.meta.url)
 
@@ -585,64 +585,128 @@ app.get("/api/search", (req, res) => {
   }
 })
 
-app.post("/api/open-in-explorer", (req, res) => {
-  const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
-  if (!targetPath) return res.status(400).json({ error: "no path" })
-  if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
-  try {
-    if (process.platform === "win32") {
-      const normalized = path.normalize(targetPath)
-      spawn("cmd.exe", ["/c", "start", "", normalized], { detached: true, stdio: "ignore" }).unref()
-    } else if (process.platform === "darwin") {
-      spawn("open", [targetPath], { detached: true, stdio: "ignore" }).unref()
-    } else {
-      spawn("xdg-open", [targetPath], { detached: true, stdio: "ignore" }).unref()
-    }
-    res.json({ ok: true })
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
-  }
-})
+// ─── Interactive-session launcher (Windows Session 0 → user desktop) ────────
+// This server runs inside Windows Session 0 (NSSM service context).
+// Processes spawned directly from Session 0 are invisible on the user's desktop.
+// schtasks /create /IT routes the launched process into the logged-on user's
+// interactive desktop session.
+//
+// Zombie-socket safety: ALL schtasks calls use execFile (async callback),
+// never execSync.  The event loop is never blocked, so shutdown signals are
+// handled immediately and port 4310 is released without delay.
+function encodePsCommand(script: string): string {
+  // UTF-16LE base64 for PowerShell -EncodedCommand: avoids all quoting issues.
+  return Buffer.from(script, "utf16le").toString("base64")
+}
 
-app.post("/api/open-terminal", (req, res) => {
-  const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
-  if (!targetPath) return res.status(400).json({ error: "no path" })
-  if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
-  try {
-    if (process.platform === "win32") {
-      const normalized = path.normalize(targetPath)
-      // Windows Terminal → PowerShell → cmd 순서로 시도
-      try {
-        spawn("wt.exe", ["-d", normalized], { detached: true, stdio: "ignore" }).unref()
-      } catch {
-        try {
-          spawn("powershell.exe", ["-NoExit", "-Command", `Set-Location '${normalized.replace(/'/g, "''")}'`], { detached: true, stdio: "ignore" }).unref()
-        } catch {
-          spawn("cmd.exe", ["/k", `cd /d "${normalized}"`], { detached: true, stdio: "ignore" }).unref()
-        }
+function launchInUserSession(psScript: string): Promise<void> {
+  if (shuttingDown) return Promise.resolve()
+  const encoded = encodePsCommand(psScript)
+  // /tr value: powershell.exe reads the script from the base64 blob
+  const trValue = `powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand ${encoded}`
+  // Unique task name — avoids collisions when user clicks rapidly
+  const taskName = `ViewerOpen_${Date.now()}_${Math.floor(Math.random() * 90000 + 10000)}`
+  // Sanitise USERNAME from the service environment (set by Windows for the
+  // account the service runs as — e.g. "NX3GAMES" — so no /ru password needed
+  // because /IT only runs when that user is already logged on interactively).
+  const username = (process.env.USERNAME ?? process.env.USER ?? "").replace(/[^\w\\.-]/g, "")
+
+  return new Promise<void>((resolve) => {
+    const createArgs = [
+      "/create", "/f",
+      "/tn", taskName,
+      "/sc", "onstart",   // /sc onstart needs no /sd or locale-specific date
+      "/it",              // interactive: run in the logged-on user's desktop
+      "/tr", trValue,
+    ]
+    if (username) createArgs.push("/ru", username)
+
+    execFile("schtasks.exe", createArgs, (createErr) => {
+      if (createErr) {
+        console.log("[viewer] schtasks create failed:", createErr.message)
+        resolve()
+        return
       }
-    } else if (process.platform === "darwin") {
-      spawn("open", ["-a", "Terminal", targetPath], { detached: true, stdio: "ignore" }).unref()
-    } else {
-      const term = process.env.TERMINAL || "xterm"
-      spawn(term, [], { cwd: targetPath, detached: true, stdio: "ignore" }).unref()
-    }
-    res.json({ ok: true })
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
-  }
-})
+      execFile("schtasks.exe", ["/run", "/tn", taskName], (runErr) => {
+        if (runErr) console.log("[viewer] schtasks run failed:", runErr.message)
+        resolve()
+        // Async cleanup — fire-and-forget, never blocks shutdown
+        setTimeout(() => execFile("schtasks.exe", ["/delete", "/f", "/tn", taskName], () => {}), 5000)
+      })
+    })
+  })
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
-app.post("/api/open-vscode", (req, res) => {
+app.post("/api/open-in-explorer", async (req, res) => {
   const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
   if (!targetPath) return res.status(400).json({ error: "no path" })
   if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
-  try {
-    spawn("code", [targetPath], { detached: true, stdio: "ignore", shell: true }).unref()
-    res.json({ ok: true })
-  } catch (err: any) {
-    res.status(500).json({ error: err.message })
+  if (process.platform === "win32") {
+    const escaped = path.normalize(targetPath).replace(/'/g, "''")
+    await launchInUserSession(`Start-Process 'explorer.exe' -ArgumentList @('${escaped}')`)
+  } else if (process.platform === "darwin") {
+    spawn("open", [targetPath], { detached: true, stdio: "ignore" }).unref()
+  } else {
+    spawn("xdg-open", [targetPath], { detached: true, stdio: "ignore" }).unref()
   }
+  res.json({ ok: true })
+})
+
+app.post("/api/open-terminal", async (req, res) => {
+  const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
+  if (!targetPath) return res.status(400).json({ error: "no path" })
+  if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
+  if (process.platform === "win32") {
+    const escaped = path.normalize(targetPath).replace(/'/g, "''")
+    // Windows Terminal (wt) → PowerShell fallback; resolved via Get-Command
+    // (spawn errors are async events, not synchronous exceptions — no try/catch)
+    const psScript = `
+$d = '${escaped}'
+$wt = Get-Command wt.exe -ErrorAction SilentlyContinue
+if ($wt) {
+  Start-Process $wt.Source -ArgumentList @('-d', $d)
+} else {
+  Start-Process 'powershell.exe' -ArgumentList @('-NoExit', '-Command', "Set-Location '$d'")
+}
+`
+    await launchInUserSession(psScript)
+  } else if (process.platform === "darwin") {
+    spawn("open", ["-a", "Terminal", targetPath], { detached: true, stdio: "ignore" }).unref()
+  } else {
+    const term = process.env.TERMINAL || "xterm"
+    spawn(term, [], { cwd: targetPath, detached: true, stdio: "ignore" }).unref()
+  }
+  res.json({ ok: true })
+})
+
+app.post("/api/open-vscode", async (req, res) => {
+  const targetPath = (req.body?.path as string | undefined) || getSessionRoot(req)
+  if (!targetPath) return res.status(400).json({ error: "no path" })
+  if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "path does not exist" })
+  if (process.platform === "win32") {
+    const escaped = path.normalize(targetPath).replace(/'/g, "''")
+    // Locate VS Code: user-install (LOCALAPPDATA) → system-install (ProgramFiles)
+    // → code.cmd in PATH → bare 'code' as last resort
+    const psScript = `
+$d = '${escaped}'
+$vsExe = @(
+  "$env:LOCALAPPDATA\\Programs\\Microsoft VS Code\\Code.exe",
+  "$env:ProgramFiles\\Microsoft VS Code\\Code.exe"
+) | Where-Object { Test-Path $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+if ($vsExe) {
+  Start-Process $vsExe -ArgumentList @($d)
+} else {
+  $cmd = Get-Command code.cmd -ErrorAction SilentlyContinue
+  if ($cmd) { Start-Process $cmd.Source -ArgumentList @($d) }
+  else { Start-Process 'code' -ArgumentList @($d) -ErrorAction SilentlyContinue }
+}
+`
+    await launchInUserSession(psScript)
+  } else {
+    spawn("code", [targetPath], { detached: true, stdio: "ignore", shell: true }).unref()
+  }
+  res.json({ ok: true })
 })
 
 app.post("/api/refresh", (_, res) => {
