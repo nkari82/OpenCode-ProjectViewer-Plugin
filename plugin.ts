@@ -13,6 +13,12 @@ let isShuttingDown = false
 // event loop가 자연 종료됨 (process.exit() 없이).
 let shutdownAbort = new AbortController()
 
+// sessionID → worktree 맵.
+// OpenCode는 세션마다 plugin()을 호출하므로, 각 호출의 input.worktree를
+// input의 session ID로 색인해둠. command.execute.before에서 cmdInput.sessionID로
+// 정확한 세션의 worktree를 조회한다.
+const sessionWorktrees = new Map<string, string>()
+
 const PLUGIN_LOG = path.join(__dirname, "plugin.log")
 function pluginLog(msg: string) {
   const line = `[${new Date().toISOString()}] ${msg}\n`
@@ -351,8 +357,18 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
   if (!input) return {}
 
   const worktree = input.worktree
+  // OpenCode가 plugin()에 넘기는 input의 세션 ID 필드명을 탐색.
+  // cmdInput.sessionID 형식이 "ses_..." 이므로 같은 이름일 가능성이 높음.
+  const inputSessionId: string | undefined =
+    input.sessionID ?? input.session_id ?? input.id ?? input.session?.id
+  pluginLog(`plugin() input: sessionID=${inputSessionId ?? "(없음)"} worktree=${worktree ?? "(없음)"}`)
+
   if (worktree && worktree !== "/" && worktree.length > 2) {
     latestWorktree = worktree
+    if (inputSessionId) {
+      sessionWorktrees.set(inputSessionId, worktree)
+      pluginLog(`sessionWorktrees[${inputSessionId.slice(0, 16)}] = ${worktree}`)
+    }
     // 서버 준비 완료 후 동기화 — await 없이 백그라운드 실행
     startupPromise.then(ready => {
       if (ready) syncProjectToViewer(worktree).catch(() => {})
@@ -361,12 +377,15 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
 
   return {
     event: async ({ event }: any) => {
-      const worktree = event?.properties?.worktree
-      if (worktree && worktree !== "/" && worktree.length > 2) {
-        latestWorktree = worktree
+      // 이벤트에서도 세션 ID를 추출해 맵을 최신 상태로 유지
+      const evtWorktree = event?.properties?.worktree
+      const evtSessionId: string | undefined =
+        event?.sessionID ?? event?.session_id ?? event?.properties?.sessionID
+      if (evtWorktree && evtWorktree !== "/" && evtWorktree.length > 2) {
+        latestWorktree = evtWorktree
+        if (evtSessionId) sessionWorktrees.set(evtSessionId, evtWorktree)
         // fire-and-forget: OpenCode 이벤트 핸들러를 블로킹하지 않음.
-        // 이전: await syncProjectToViewer() → 이벤트마다 최대 2초 블록.
-        syncProjectToViewer(worktree).catch(() => {})
+        syncProjectToViewer(evtWorktree).catch(() => {})
       }
     },
 
@@ -384,15 +403,17 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
     "command.execute.before": async (cmdInput: any, output: any) => {
       if (cmdInput.command === "open-view") {
         // worktree 소스 우선순위:
-        //   1) cmdInput.worktree          — /open-view 실행 시점의 현재 세션 (db 미등록 포함)
-        //   2) cmdInput.properties.worktree — 일부 OpenCode 버전의 구조
-        //   3) latestWorktree             — 마지막 이벤트에서 받은 worktree
-        //   4) input.worktree             — 플러그인 초기화 시점의 worktree
+        //   1) cmdInput.worktree / properties.worktree — OpenCode가 직접 제공 (현재는 미제공)
+        //   2) sessionWorktrees.get(sessionID) — plugin() 호출 시 기록한 세션별 worktree ★핵심
+        //   3) latestWorktree  — 마지막 이벤트 worktree (모든 세션 공유라 부정확할 수 있음)
+        //   4) input?.worktree — 이 클로저의 plugin() input (마지막 호출 세션이라 부정확할 수 있음)
+        const sessionWorktree = sessionWorktrees.get(cmdInput.sessionID)
         const worktree = cmdInput?.worktree
           || cmdInput?.properties?.worktree
+          || sessionWorktree
           || latestWorktree
           || input?.worktree
-        pluginLog(`/open-view: worktree=${worktree || "(없음)"} cmdInput=${JSON.stringify(cmdInput)}`)
+        pluginLog(`/open-view: sessionID=${cmdInput.sessionID} sessionWorktree=${sessionWorktree ?? "(없음)"} → worktree=${worktree ?? "(없음)"}`)
         if (worktree && worktree !== "/" && worktree.length > 2 && await pingServer()) {
           // force=true: sessionRoots 초기화 → 기존 브라우저 탭도 강제 전환
           await syncProjectToViewer(worktree, true)
