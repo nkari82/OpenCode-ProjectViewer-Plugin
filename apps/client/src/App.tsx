@@ -1251,7 +1251,7 @@ export default function App() {
     await openFile(currentPath, title)
   }
 
-  async function loadTree(expectedRoot: string) {
+  async function loadTree(expectedRoot: string): Promise<boolean> {
     const token = ++syncTokenRef.current
 
     try {
@@ -1261,13 +1261,15 @@ export default function App() {
       ])
 
       if (token !== syncTokenRef.current || (expectedRoot && rootData.root !== expectedRoot)) {
-        return
+        return false
       }
 
       setTree(data)
       setDirChildren(new Map())
+      return true
     } catch (err) {
       console.error("loadTree failed", err)
+      return false
     }
   }
 
@@ -1328,12 +1330,19 @@ export default function App() {
       if (rootValue && rootValue !== rootRef.current) {
         fileCacheRef.current.clear()
         setDirChildren(new Map())
+        setTree([])          // 이전 프로젝트 트리가 새 루트와 함께 보이지 않도록 먼저 비움
         setRoot(rootValue)
         setTitle("")
         setFileData(EMPTY_FILE_DATA)
         setViewMode("render")
         setOpenDirs(new Set())
-        await loadTree(rootValue)
+        const treeOk = await loadTree(rootValue)
+        if (!treeOk) {
+          // 서버가 아직 초기화 중(Shiki 등)이거나 타임아웃 → 3초 후 한 번 재시도
+          setTimeout(() => {
+            if (rootRef.current === rootValue) loadTree(rootValue).catch(() => {})
+          }, 3000)
+        }
       }
     } catch (err) {
       console.error("checkRoot failed", err)

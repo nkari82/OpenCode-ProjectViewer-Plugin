@@ -729,7 +729,8 @@ app.post("/api/open-project", (req, res) => {
     console.log("[viewer] session root:", sid.slice(0, 8), newRoot)
   } else {
     ROOT = newRoot
-    sessionRoots.clear()
+    // sessionRoots는 지우지 않음: 브라우저에서 수동으로 선택한 세션 루트를
+    // 플러그인 호출이 덮어쓰면 안 됨. 세션 루트가 없는 탭만 ROOT를 따라감.
     persistRoot(ROOT)
     console.log("[viewer] global root:", ROOT)
   }
