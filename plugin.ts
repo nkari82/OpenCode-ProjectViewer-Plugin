@@ -306,6 +306,24 @@ async function openBrowser(url: string) {
   }
 }
 
+// opencode.db의 session.directory에서 sessionID에 대한 실제 작업 경로를 조회.
+// 미등록 프로젝트도 session.directory에 정확한 경로가 저장됨.
+async function getWorktreeForSession(sessionId: string): Promise<string | null> {
+  try {
+    const res = await fetchWithTimeout(
+      viewerUrl(`/api/session-worktree?sessionId=${encodeURIComponent(sessionId)}`),
+      {}, 2000
+    )
+    if (res.ok) {
+      const data = await res.json() as any
+      if (data.worktree && data.worktree !== "/" && data.worktree.length > 2) {
+        return data.worktree as string
+      }
+    }
+  } catch {}
+  return null
+}
+
 // force=false: 백그라운드 동기화 — 브라우저가 수동 선택한 세션 루트는 유지
 // force=true : /open-view 전용 — sessionRoots 초기화로 모든 탭 강제 전환
 async function syncProjectToViewer(worktree: string, force = false) {
@@ -404,16 +422,18 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
       if (cmdInput.command === "open-view") {
         // worktree 소스 우선순위:
         //   1) cmdInput.worktree / properties.worktree — OpenCode가 직접 제공 (현재는 미제공)
-        //   2) sessionWorktrees.get(sessionID) — plugin() 호출 시 기록한 세션별 worktree ★핵심
-        //   3) latestWorktree  — 마지막 이벤트 worktree (모든 세션 공유라 부정확할 수 있음)
-        //   4) input?.worktree — 이 클로저의 plugin() input (마지막 호출 세션이라 부정확할 수 있음)
+        //   2) opencode.db session.directory — sessionID로 DB 조회 ★핵심 (미등록도 정확)
+        //   3) sessionWorktrees.get(sessionID) — plugin() 호출 기록 (fallback)
+        //   4) latestWorktree / input?.worktree — 공유 변수, 부정확할 수 있음
+        const dbWorktree = await getWorktreeForSession(cmdInput.sessionID)
         const sessionWorktree = sessionWorktrees.get(cmdInput.sessionID)
         const worktree = cmdInput?.worktree
           || cmdInput?.properties?.worktree
+          || dbWorktree
           || sessionWorktree
           || latestWorktree
           || input?.worktree
-        pluginLog(`/open-view: sessionID=${cmdInput.sessionID} sessionWorktree=${sessionWorktree ?? "(없음)"} → worktree=${worktree ?? "(없음)"}`)
+        pluginLog(`/open-view: sessionID=${cmdInput.sessionID} dbWorktree=${dbWorktree ?? "(없음)"} → worktree=${worktree ?? "(없음)"}`)
         if (worktree && worktree !== "/" && worktree.length > 2 && await pingServer()) {
           // force=true: sessionRoots 초기화 → 기존 브라우저 탭도 강제 전환
           await syncProjectToViewer(worktree, true)

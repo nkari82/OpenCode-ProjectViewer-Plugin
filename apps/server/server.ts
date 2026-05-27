@@ -681,6 +681,41 @@ app.post("/api/refresh", (_, res) => {
   res.json({ ok: true, refreshSeq })
 })
 
+// opencode.db의 session.directory 로 sessionID → 실제 작업 디렉토리를 조회.
+// db에 미등록된 프로젝트도 session.directory에는 정확한 경로가 들어있음.
+app.get("/api/session-worktree", (req, res) => {
+  const sessionId = req.query.sessionId as string
+  if (!sessionId) return res.status(400).json({ error: "sessionId required" })
+
+  const dbPath = findOpencodeDbPath()
+  if (!dbPath) return res.json({ worktree: null, error: "db not found" })
+
+  let db: any = null
+  try {
+    db = new DatabaseSync(dbPath)
+    try { db.prepare("PRAGMA journal_mode=WAL").get() } catch {}
+
+    const row = db.prepare(
+      "SELECT s.directory, s.path, p.worktree FROM session s LEFT JOIN project p ON s.project_id = p.id WHERE s.id = ?"
+    ).get(sessionId) as any
+
+    // directory: 실제 작업 경로 (미등록 프로젝트도 포함)
+    // path, worktree: fallback
+    const worktree = (row?.directory && row.directory !== "/" && row.directory !== "")
+      ? row.directory
+      : (row?.path && row.path !== "/" && row.path !== "")
+        ? row.path
+        : (row?.worktree && row.worktree !== "/" && row.worktree !== "")
+          ? row.worktree
+          : null
+
+    res.json({ worktree })
+  } catch (e: any) {
+    res.json({ worktree: null, error: String(e?.message ?? e) })
+  } finally {
+    if (db) try { db.close() } catch {}
+  }
+})
 
 app.get("/api/projects", (req, res) => {
   if (req.query.refresh === "1") projectsCache = null
