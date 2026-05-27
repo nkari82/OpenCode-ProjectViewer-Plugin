@@ -681,6 +681,21 @@ app.post("/api/refresh", (_, res) => {
   res.json({ ok: true, refreshSeq })
 })
 
+// /open-view 명령어 전용: ROOT를 강제로 변경하고 sessionRoots 초기화.
+// 기존 브라우저 탭이 수동으로 세션 루트를 설정한 경우에도 이 엔드포인트 호출 시
+// 모든 세션이 새 프로젝트로 전환됨.
+app.post("/api/force-project", (req, res) => {
+  if (typeof req.body?.path !== "string" || !req.body.path.trim()) {
+    return res.status(400).json({ error: "path is required" })
+  }
+  const newRoot = path.resolve(req.body.path)
+  ROOT = newRoot
+  sessionRoots.clear()
+  persistRoot(ROOT)
+  console.log("[viewer] force-project:", newRoot)
+  res.json({ ok: true, root: newRoot })
+})
+
 app.get("/api/projects", (req, res) => {
   if (req.query.refresh === "1") projectsCache = null
   const result = listOpencodeProjects()

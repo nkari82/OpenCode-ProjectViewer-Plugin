@@ -279,6 +279,19 @@ async function syncProjectToViewer(worktree: string) {
   } catch {}
 }
 
+// /open-view 전용: sessionRoots를 초기화해 모든 브라우저 탭이 새 프로젝트로 강제 전환됨.
+async function forceSyncProject(worktree: string) {
+  if (!worktree) return
+  try {
+    await fetchWithTimeout(viewerUrl("/api/force-project"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: worktree }),
+    }, 2000)
+    pluginLog(`강제 프로젝트 전환: ${worktree}`)
+  } catch {}
+}
+
 function startWatchdog() {
   if (watchdogTimer) return
   watchdogTimer = setInterval(async () => {
@@ -346,16 +359,21 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
     "command.execute.before": async (cmdInput: any, _output: any) => {
       if (cmdInput.command === "open-view") {
         // worktree 소스 우선순위:
-        //   1) cmdInput.worktree — /open-view 실행 시점의 현재 세션 (db 미등록 프로젝트 포함)
-        //   2) latestWorktree   — 마지막으로 이벤트에서 받은 worktree
-        //   3) input.worktree  — 플러그인 초기화 시점의 worktree
-        const worktree = cmdInput?.worktree || latestWorktree || input?.worktree
+        //   1) cmdInput.worktree          — /open-view 실행 시점의 현재 세션 (db 미등록 포함)
+        //   2) cmdInput.properties.worktree — 일부 OpenCode 버전의 구조
+        //   3) latestWorktree             — 마지막 이벤트에서 받은 worktree
+        //   4) input.worktree             — 플러그인 초기화 시점의 worktree
+        const worktree = cmdInput?.worktree
+          || cmdInput?.properties?.worktree
+          || latestWorktree
+          || input?.worktree
+        pluginLog(`/open-view: worktree=${worktree || "(없음)"} cmdInput=${JSON.stringify(cmdInput)}`)
         if (worktree && worktree !== "/" && worktree.length > 2 && await pingServer()) {
-          // 브라우저를 열기 전에 먼저 동기화: 뷰어가 열리자마자 올바른 프로젝트 표시
-          await syncProjectToViewer(worktree)
+          // forceSyncProject: sessionRoots 초기화 → 기존 브라우저 탭도 강제 전환
+          await forceSyncProject(worktree)
         }
         openBrowser(viewerUrl())
-        pluginLog(`/open-view 실행: 브라우저 열기 ${viewerUrl()} worktree=${worktree || "(없음)"}`)
+        pluginLog(`브라우저 열기: ${viewerUrl()}`)
       }
     },
   }
