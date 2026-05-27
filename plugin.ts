@@ -272,17 +272,18 @@ async function openBrowser(url: string) {
 
     if (isSession0) {
       const taskName = "opencode-viewer-open"
-      // cmd /c start 인수의 따옴표를 이스케이프
-      const safeUrl = url.replace(/"/g, '\\"')
-      const tr = `cmd /c start "" "${safeUrl}"`
+      // schtasks /tr 값 안에 따옴표를 중첩하면 파싱 오류 발생.
+      // http://127.0.0.1:4310 은 공백이 없으므로 따옴표 없이 그대로 사용.
+      // /IT : Interactive Task — 로그온된 유저의 세션(Session 1)에서 실행됨.
+      // /run /tn : 예약 시간 무관하게 즉시 실행. (/I 플래그는 존재하지 않음)
+      const tr = `explorer.exe ${url}`
       try {
         await execAsync(`schtasks /delete /f /tn "${taskName}"`, { timeout: 3000 }).catch(() => {})
         await execAsync(`schtasks /create /f /sc ONCE /tn "${taskName}" /tr "${tr}" /st 00:00 /IT`, { timeout: 3000 })
-        await execAsync(`schtasks /run /I /tn "${taskName}"`, { timeout: 3000 })
+        await execAsync(`schtasks /run /tn "${taskName}"`, { timeout: 3000 })
         pluginLog(`schtasks /IT 브라우저 열기 성공`)
       } catch (e: any) {
-        pluginLog(`schtasks 실패: ${e?.message} — fallback spawn`)
-        spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore", shell: true }).unref()
+        pluginLog(`schtasks 실패: ${e?.message}`)
       } finally {
         execAsync(`schtasks /delete /f /tn "${taskName}"`).catch(() => {})
       }
