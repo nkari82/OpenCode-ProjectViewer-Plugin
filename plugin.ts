@@ -14,9 +14,9 @@ let isShuttingDown = false
 let shutdownAbort = new AbortController()
 
 // sessionID → worktree 맵.
-// OpenCode는 세션마다 plugin()을 호출하므로, 각 호출의 input.worktree를
-// input의 session ID로 색인해둠. command.execute.before에서 cmdInput.sessionID로
-// 정확한 세션의 worktree를 조회한다.
+// command.execute.before에서 cmdInput.sessionID로 세션별 worktree를 조회하기 위한 캐시.
+// 참고: OpenCode는 plugin() input에 sessionID를 포함하지 않음 (확인됨).
+//       따라서 이 맵은 event 핸들러를 통해서만 채워질 수 있으며 현재는 미사용 상태.
 const sessionWorktrees = new Map<string, string>()
 
 const PLUGIN_LOG = path.join(__dirname, "plugin.log")
@@ -36,11 +36,7 @@ function handleShutdown(signal: string) {
   // ping loop 내 shutdownAbort 연결 sleep도 즉시 깨어남
   shutdownAbort.abort()
   pluginLog("fetch 전체 취소 완료 — process.exit(0)")
-  // 즉시 종료: 1000ms 딜레이 제거.
-  // 이전 1000ms 대기는 "자연 종료 기다리기"였으나 Bun/OpenCode event loop는
-  // WebSocket·DB 때문에 자연 종료되지 않아 항상 process.exit(0)이 실행됐음.
-  // → 딜레이만큼 port 4096이 더 오래 점유되어 NSSM 재시작 시 ghost socket 유발.
-  // process.exit(0)은 정상 종료(ExitProcess)이므로 OS가 4096 소켓을 즉시 반환.
+  // process.exit(0): OS가 4096 소켓을 즉시 반환 (ghost socket 방지)
   process.exit(0)
 }
 
@@ -81,8 +77,6 @@ async function pingServer() {
 async function killProcessOnPort(port: number) {
   // 종료 중에는 포트 킬 금지
   if (isShuttingDown) return
-  // execSync → execAsync: 이벤트 루프 블로킹 제거.
-  // 이전: execSync('netstat -ano') 가 수백ms 동안 OpenCode 이벤트 루프를 점유.
   const { exec } = await import("child_process")
   const { promisify } = await import("util")
   const execAsync = promisify(exec)
@@ -115,8 +109,7 @@ async function killProcessOnPort(port: number) {
   }
 }
 
-// spawnSync → async exec + 결과 캐시: 이벤트 루프 블로킹 제거.
-// 이전: spawnSync('where', ['node']) 가 프로세스 생성 완료까지 이벤트 루프 점유.
+// node 실행 경로를 한 번만 탐색하고 캐시 (비동기, 이벤트 루프 블로킹 없음)
 let cachedNodeExec: string | null = null
 async function findNodeExecutable(): Promise<string> {
   if (cachedNodeExec) return cachedNodeExec
@@ -348,8 +341,7 @@ function startWatchdog() {
       .then(r => r.status === 200 || r.status === 503)
       .catch(() => false)
     if (!alive) {
-      // 종료 중에는 재시작 금지: startViewerServer() 안의 killProcessOnPort(execSync)가
-      // 이벤트 루프를 블록킹해 process.exit(0) 실행을 지연시킬 수 있음.
+      // await 중에 shutdown이 시작됐을 수 있으므로 재확인
       if (isShuttingDown) return
       pluginLog("서버 다운, 재시작...")
       startViewerPromise = null
@@ -363,9 +355,8 @@ function startWatchdog() {
 const plugin = async (input?: any, _options?: any): Promise<any> => {
   pluginLog(`plugin() 호출됨`)
 
-  // OpenCode를 블로킹하지 않도록 서버 시작을 백그라운드로 처리.
-  // 이전: await startViewerServer() → 서버 부팅 시 최대 30초 OpenCode 블록.
-  // 수정: fire-and-forget, 서버 준비 완료 후 초기 동기화도 백그라운드 체인.
+  // OpenCode를 블로킹하지 않도록 서버 시작을 백그라운드로 처리 (fire-and-forget).
+  // 서버 준비 완료 후 초기 프로젝트 동기화도 체인으로 실행.
   const startupPromise = startViewerServer().catch(err => {
     pluginLog(`Server startup error: ${err}`)
     return false
@@ -375,8 +366,8 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
   if (!input) return {}
 
   const worktree = input.worktree
-  // OpenCode가 plugin()에 넘기는 input의 세션 ID 필드명을 탐색.
-  // cmdInput.sessionID 형식이 "ses_..." 이므로 같은 이름일 가능성이 높음.
+  // OpenCode는 plugin() input에 sessionID를 포함하지 않음 (확인됨 — 항상 undefined).
+  // 여러 필드명으로 시도하나 실제로는 채워지지 않음.
   const inputSessionId: string | undefined =
     input.sessionID ?? input.session_id ?? input.id ?? input.session?.id
   pluginLog(`plugin() input: sessionID=${inputSessionId ?? "(없음)"} worktree=${worktree ?? "(없음)"}`)
@@ -411,9 +402,7 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
       if (!config.command) config.command = {}
       config.command["open-view"] = {
         description: "브라우저에서 프로젝트 뷰어 열기 (localhost:4310)",
-        // template을 빈 문자열로 설정 — LLM 호출 최소화 시도.
-        // OpenCode 플러그인 API는 action-only 명령을 공식 지원하지 않으나,
-        // output.parts를 before 훅에서 채워두면 LLM이 스킵될 수 있음.
+        // template: "" — command.execute.before에서 output.parts를 채워 LLM 호출을 건너뜀
         template: "",
       }
     },
@@ -440,8 +429,7 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
         }
         await openBrowser(viewerUrl())
         pluginLog(`브라우저 열기 완료: ${viewerUrl()}`)
-        // output.parts를 미리 채워서 LLM 스킵 시도.
-        // OpenCode가 parts가 이미 채워져 있으면 LLM을 호출하지 않을 수 있음.
+        // output.parts에 응답을 미리 채워 LLM 호출을 건너뛰게 함
         try {
           if (output && Array.isArray(output.parts)) {
             output.parts.push({ type: "text", text: "프로젝트 뷰어를 브라우저에서 열었습니다." })

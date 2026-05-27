@@ -31,3 +31,8 @@ Thumbs.db
 viewer-root.json
 plugin.log
 server.log
+
+# stray db files (copied to cwd by pnpm or tools)
+*.db
+*.db-shm
+*.db-wal

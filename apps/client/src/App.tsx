@@ -1659,9 +1659,6 @@ export default function App() {
     const cat = getFileCategory(title)
 
     if (viewMode === "render" && cat === "renderable") {
-      if (fileData.type === "pdf") {
-        return <iframe src={fileData.url} className="viewer-frame" title={title} />
-      }
       if (fileData.type === "html") {
         return <iframe src={fileData.url} className="viewer-frame" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" title={title} />
       }

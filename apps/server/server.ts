@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "url"
 import { createRequire } from "module"
 import { extractSymbols } from "./symbolExtractor.js"
 import { deflateRawSync, inflateRawSync } from "zlib"
-import { exec, execFile, execSync, spawn } from "child_process"
+import { execFile, execSync, spawn } from "child_process"
 
 const _require = createRequire(import.meta.url)
 
@@ -1457,9 +1457,8 @@ if (PARENT_PID) {
     }
     if (parentPids.size === 0) {
       // 25s grace: NSSM 재시작 후 새 OpenCode가 plugin()을 호출해 register-pid를
-      // 보내기까지 충분한 시간. opencode-start.ps1 기준 npm update(5s) + port wait(0-10s)
-      // + opencode 기동(3s) = 최대 ~20s → 25s는 안전 마진 포함.
-      // (구 120s → 25s: 불필요한 4310 포트 점유 최소화)
+      // 보내기까지 충분한 시간. opencode-start.cmd 기준 npm update(~5s) + opencode 기동(~3s)
+      // = 최대 ~20s → 25s는 안전 마진 포함.
       setTimeout(() => {
         if (parentPids.size === 0) shutdownServer("all parent processes gone", null)
       }, 25_000)
