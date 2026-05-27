@@ -352,11 +352,14 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
       if (!config.command) config.command = {}
       config.command["open-view"] = {
         description: "브라우저에서 프로젝트 뷰어 열기 (localhost:4310)",
-        template: "The user ran /open-view. The project viewer is opening in the browser at http://localhost:4310. Confirm this in one short sentence.",
+        // template을 빈 문자열로 설정 — LLM 호출 최소화 시도.
+        // OpenCode 플러그인 API는 action-only 명령을 공식 지원하지 않으나,
+        // output.parts를 before 훅에서 채워두면 LLM이 스킵될 수 있음.
+        template: "",
       }
     },
 
-    "command.execute.before": async (cmdInput: any, _output: any) => {
+    "command.execute.before": async (cmdInput: any, output: any) => {
       if (cmdInput.command === "open-view") {
         // worktree 소스 우선순위:
         //   1) cmdInput.worktree          — /open-view 실행 시점의 현재 세션 (db 미등록 포함)
@@ -374,6 +377,13 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
         }
         openBrowser(viewerUrl())
         pluginLog(`브라우저 열기: ${viewerUrl()}`)
+        // output.parts를 미리 채워서 LLM 스킵 시도.
+        // OpenCode가 parts가 이미 채워져 있으면 LLM을 호출하지 않을 수 있음.
+        try {
+          if (output && Array.isArray(output.parts)) {
+            output.parts.push({ type: "text", text: "프로젝트 뷰어를 브라우저에서 열었습니다." })
+          }
+        } catch {}
       }
     },
   }
