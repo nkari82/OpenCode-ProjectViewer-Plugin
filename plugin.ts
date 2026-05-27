@@ -257,9 +257,41 @@ async function startViewerServer() {
   return p
 }
 
-function openBrowser(url: string) {
+async function openBrowser(url: string) {
   if (process.platform === "win32") {
-    spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref()
+    const { exec } = await import("child_process")
+    const { promisify } = await import("util")
+    const execAsync = promisify(exec)
+
+    // SESSIONNAME이 없거나 "Services"이면 Session 0 (NSSM 서비스 컨텍스트).
+    // Session 0에서는 spawn("cmd /c start ...")이 유저 데스크탑(Session 1)에 창을 열지 못함.
+    // schtasks /IT 플래그: Interactive Task — 로그온된 유저의 세션(Session 1)에서 실행됨.
+    const sessionName = process.env.SESSIONNAME ?? ""
+    const isSession0 = !sessionName || sessionName === "Services"
+    pluginLog(`openBrowser: sessionName="${sessionName}" isSession0=${isSession0} url=${url}`)
+
+    if (isSession0) {
+      const taskName = "opencode-viewer-open"
+      // cmd /c start 인수의 따옴표를 이스케이프
+      const safeUrl = url.replace(/"/g, '\\"')
+      const tr = `cmd /c start "" "${safeUrl}"`
+      try {
+        await execAsync(`schtasks /delete /f /tn "${taskName}"`, { timeout: 3000 }).catch(() => {})
+        await execAsync(`schtasks /create /f /sc ONCE /tn "${taskName}" /tr "${tr}" /st 00:00 /IT`, { timeout: 3000 })
+        await execAsync(`schtasks /run /I /tn "${taskName}"`, { timeout: 3000 })
+        pluginLog(`schtasks /IT 브라우저 열기 성공`)
+      } catch (e: any) {
+        pluginLog(`schtasks 실패: ${e?.message} — fallback spawn`)
+        spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore", shell: true }).unref()
+      } finally {
+        execAsync(`schtasks /delete /f /tn "${taskName}"`).catch(() => {})
+      }
+    } else {
+      // 일반 유저 세션: 직접 spawn
+      const child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" })
+      child.on("error", (e) => pluginLog(`openBrowser spawn 오류: ${e.message}`))
+      child.unref()
+    }
   } else if (process.platform === "darwin") {
     spawn("open", [url], { detached: true, stdio: "ignore" }).unref()
   } else {
@@ -375,8 +407,8 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
           // forceSyncProject: sessionRoots 초기화 → 기존 브라우저 탭도 강제 전환
           await forceSyncProject(worktree)
         }
-        openBrowser(viewerUrl())
-        pluginLog(`브라우저 열기: ${viewerUrl()}`)
+        await openBrowser(viewerUrl())
+        pluginLog(`브라우저 열기 완료: ${viewerUrl()}`)
         // output.parts를 미리 채워서 LLM 스킵 시도.
         // OpenCode가 parts가 이미 채워져 있으면 LLM을 호출하지 않을 수 있음.
         try {
