@@ -837,7 +837,11 @@ app.get("/api/file", async (req, res) => {
   try {
     const file = safeResolve(req.query.path as string, getSessionRoot(req))
     const ext = path.extname(file).toLowerCase()
-    const rawPath = `/api/raw?path=${encodeURIComponent(req.query.path as string)}`
+    // iframe / img / pdfjs 는 X-Session-Id 헤더를 보내지 않으므로
+    // session ID를 쿼리 파라미터로 포함시켜 /api/raw 가 올바른 루트를 사용하게 함.
+    const sid = req.headers["x-session-id"] as string | undefined
+    const sidParam = sid ? `&sid=${encodeURIComponent(sid)}` : ""
+    const rawPath = `/api/raw?path=${encodeURIComponent(req.query.path as string)}${sidParam}`
 
     if (ext === ".pdf") {
       return res.json({ type: "pdf", raw: "", rendered: "", url: rawPath })
@@ -865,7 +869,7 @@ app.get("/api/file", async (req, res) => {
         (_match, attrs: string, src: string) => {
           if (/^(https?:\/\/|\/\/|data:|\/)/i.test(src)) return `<img${attrs} src="${src}"`
           const abs = path.resolve(fileDir, src)
-          return `<img${attrs} src="/api/raw?path=${encodeURIComponent(abs)}"`
+          return `<img${attrs} src="/api/raw?path=${encodeURIComponent(abs)}${sidParam}"`
         },
       )
 
@@ -993,7 +997,12 @@ app.get("/api/plantuml/:encoded", async (req, res) => {
 
 app.get("/api/raw", (req, res) => {
   try {
-    const file = safeResolve(req.query.path as string, getSessionRoot(req))
+    // iframe / img / pdfjs 는 X-Session-Id 헤더를 보내지 않음.
+    // /api/file 에서 rawPath 생성 시 &sid= 쿼리 파라미터로 세션 ID를 포함시켜
+    // 여기서 올바른 세션 루트를 복원한다.
+    const sid = (req.headers["x-session-id"] as string) || (req.query.sid as string)
+    const root = (sid && sessionRoots.has(sid)) ? sessionRoots.get(sid)! : ROOT
+    const file = safeResolve(req.query.path as string, root)
     return res.sendFile(file)
   } catch (err: any) {
     return res.status(403).json({ error: err.message })
