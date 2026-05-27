@@ -1,6 +1,6 @@
 import fs from "fs"
 import path from "path"
-import { spawn, spawnSync } from "child_process"
+import { spawn } from "child_process"
 import { fileURLToPath } from "url"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -73,16 +73,20 @@ async function pingServer() {
 }
 
 async function killProcessOnPort(port: number) {
-  // 종료 중에는 포트 킬 금지: execSync가 이벤트 루프를 블록킹하면
-  // shutdownAbort 전파 및 process.exit(0) 실행이 지연됨.
+  // 종료 중에는 포트 킬 금지
   if (isShuttingDown) return
-  const { execSync } = await import("child_process")
+  // execSync → execAsync: 이벤트 루프 블로킹 제거.
+  // 이전: execSync('netstat -ano') 가 수백ms 동안 OpenCode 이벤트 루프를 점유.
+  const { exec } = await import("child_process")
+  const { promisify } = await import("util")
+  const execAsync = promisify(exec)
   if (process.platform === "win32") {
     try {
       // findstr 부분 문자열 매칭 대신 전체 netstat 출력을 파싱하여 정확한 포트 비교.
       // 예: findstr :4310 은 :43100 도 매칭하여 VPN/RDP 관련 프로세스를 잘못 종료할 수 있음.
-      const out = execSync(`netstat -ano`, { encoding: "utf8" })
-      for (const line of out.split("\n")) {
+      const { stdout } = await execAsync("netstat -ano")
+      const pidsToKill: string[] = []
+      for (const line of stdout.split("\n")) {
         if (!line.includes("LISTENING")) continue
         const parts = line.trim().split(/\s+/)
         // netstat 포맷: Proto LocalAddr ForeignAddr State PID
@@ -92,17 +96,24 @@ async function killProcessOnPort(port: number) {
         if (!localAddr.endsWith(`:${port}`)) continue
         const pid = parts[parts.length - 1]
         if (pid && /^\d+$/.test(pid) && pid !== "0" && parseInt(pid) !== process.pid) {
-          // /t (tree) 플래그 제거: 자식 프로세스 전체 트리 종료를 방지 (VPN/RDP 끊김 원인)
-          try { execSync(`taskkill /f /pid ${pid}`, { stdio: "ignore" }) } catch {}
+          pidsToKill.push(pid)
         }
+      }
+      for (const pid of pidsToKill) {
+        // /t (tree) 플래그 제거: 자식 프로세스 전체 트리 종료를 방지 (VPN/RDP 끊김 원인)
+        try { await execAsync(`taskkill /f /pid ${pid}`) } catch {}
       }
     } catch {}
   } else {
-    try { execSync(`fuser -k ${port}/tcp`, { stdio: "ignore" }) } catch {}
+    try { await execAsync(`fuser -k ${port}/tcp`) } catch {}
   }
 }
 
-function findNodeExecutable(): string {
+// spawnSync → async exec + 결과 캐시: 이벤트 루프 블로킹 제거.
+// 이전: spawnSync('where', ['node']) 가 프로세스 생성 완료까지 이벤트 루프 점유.
+let cachedNodeExec: string | null = null
+async function findNodeExecutable(): Promise<string> {
+  if (cachedNodeExec) return cachedNodeExec
   if (process.platform === "win32") {
     const candidates = [
       "C:\\Program Files\\nodejs\\node.exe",
@@ -111,25 +122,32 @@ function findNodeExecutable(): string {
       path.join(process.env.APPDATA ?? "", "nvm", "current", "node.exe"),
     ]
     for (const c of candidates) {
-      if (fs.existsSync(c)) return c
+      if (fs.existsSync(c)) { cachedNodeExec = c; return c }
     }
     try {
-      const result = spawnSync("where", ["node"], { encoding: "utf8" })
-      const first = result.stdout?.trim().split(/\r?\n/)[0] ?? ""
-      if (first && fs.existsSync(first)) return first
+      const { exec } = await import("child_process")
+      const { promisify } = await import("util")
+      const { stdout } = await promisify(exec)("where node")
+      const first = stdout.trim().split(/\r?\n/)[0] ?? ""
+      if (first && fs.existsSync(first)) { cachedNodeExec = first; return first }
     } catch {}
   } else {
     const execPath = process.execPath ?? ""
-    if (path.basename(execPath).toLowerCase().replace(/\.exe$/i, "") === "node") return execPath
+    if (path.basename(execPath).toLowerCase().replace(/\.exe$/i, "") === "node") {
+      cachedNodeExec = execPath; return execPath
+    }
     for (const c of ["/usr/local/bin/node", "/usr/bin/node"]) {
-      if (fs.existsSync(c)) return c
+      if (fs.existsSync(c)) { cachedNodeExec = c; return c }
     }
     try {
-      const result = spawnSync("which", ["node"], { encoding: "utf8" })
-      const first = result.stdout?.trim() ?? ""
-      if (first && fs.existsSync(first)) return first
+      const { exec } = await import("child_process")
+      const { promisify } = await import("util")
+      const { stdout } = await promisify(exec)("which node")
+      const first = stdout.trim() ?? ""
+      if (first && fs.existsSync(first)) { cachedNodeExec = first; return first }
     } catch {}
   }
+  cachedNodeExec = "node"
   return "node"
 }
 
@@ -182,7 +200,7 @@ async function startViewerServer() {
       return false
     }
 
-    const nodeExec = findNodeExecutable()
+    const nodeExec = await findNodeExecutable()
     const logPath = path.join(__dirname, "server.log")
     pluginLog(`spawn: ${nodeExec} ${serverScript}`)
     pluginLog(`server.log → ${logPath}`)
