@@ -345,16 +345,17 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
 
     "command.execute.before": async (cmdInput: any, _output: any) => {
       if (cmdInput.command === "open-view") {
-        // 브라우저를 즉시 열고, 동기화는 백그라운드로 처리.
-        // 이전: await pingServer() + await syncProjectToViewer() → 최대 3.5초 대기 후 브라우저 오픈.
-        openBrowser(viewerUrl())
-        pluginLog(`/open-view 실행: 브라우저 열기 ${viewerUrl()}`)
-        const worktree = latestWorktree || input.worktree
-        if (worktree && worktree !== "/" && worktree.length > 2) {
-          pingServer().then(alive => {
-            if (alive) syncProjectToViewer(worktree).catch(() => {})
-          })
+        // worktree 소스 우선순위:
+        //   1) cmdInput.worktree — /open-view 실행 시점의 현재 세션 (db 미등록 프로젝트 포함)
+        //   2) latestWorktree   — 마지막으로 이벤트에서 받은 worktree
+        //   3) input.worktree  — 플러그인 초기화 시점의 worktree
+        const worktree = cmdInput?.worktree || latestWorktree || input?.worktree
+        if (worktree && worktree !== "/" && worktree.length > 2 && await pingServer()) {
+          // 브라우저를 열기 전에 먼저 동기화: 뷰어가 열리자마자 올바른 프로젝트 표시
+          await syncProjectToViewer(worktree)
         }
+        openBrowser(viewerUrl())
+        pluginLog(`/open-view 실행: 브라우저 열기 ${viewerUrl()} worktree=${worktree || "(없음)"}`)
       }
     },
   }

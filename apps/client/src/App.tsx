@@ -1467,9 +1467,13 @@ export default function App() {
     try {
       const url = forceRefresh ? "/api/projects?refresh=1" : "/api/projects"
       const data = await fetchJson<any>(url)
-      if (data.ok && Array.isArray(data.projects)) {
+      // DB 오류여도 서버가 현재 ROOT를 projects 배열에 포함시켜 반환하므로
+      // ok 여부와 무관하게 배열이 있으면 표시.
+      if (Array.isArray(data.projects)) {
         setProjects(data.projects)
-      } else if (!data.ok) {
+      }
+      // DB 자체를 읽지 못했고 목록도 비어있을 때만 에러 표시
+      if (!data.ok && (!Array.isArray(data.projects) || data.projects.length === 0)) {
         setProjectsError(data.error || "목록 로드 실패")
       }
     } catch (err) {
