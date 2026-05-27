@@ -681,20 +681,6 @@ app.post("/api/refresh", (_, res) => {
   res.json({ ok: true, refreshSeq })
 })
 
-// /open-view 명령어 전용: ROOT를 강제로 변경하고 sessionRoots 초기화.
-// 기존 브라우저 탭이 수동으로 세션 루트를 설정한 경우에도 이 엔드포인트 호출 시
-// 모든 세션이 새 프로젝트로 전환됨.
-app.post("/api/force-project", (req, res) => {
-  if (typeof req.body?.path !== "string" || !req.body.path.trim()) {
-    return res.status(400).json({ error: "path is required" })
-  }
-  const newRoot = path.resolve(req.body.path)
-  ROOT = newRoot
-  sessionRoots.clear()
-  persistRoot(ROOT)
-  console.log("[viewer] force-project:", newRoot)
-  res.json({ ok: true, root: newRoot })
-})
 
 app.get("/api/projects", (req, res) => {
   if (req.query.refresh === "1") projectsCache = null
@@ -738,16 +724,24 @@ app.post("/api/open-project", (req, res) => {
 
   const sid = req.headers["x-session-id"] as string | undefined
   const newRoot = path.resolve(req.body.path)
+  // force: true → sessionRoots 초기화. /open-view 시 플러그인이 전달.
+  // 기존 탭이 수동으로 설정한 세션 루트도 이 경우에만 덮어씀.
+  const force = req.body.force === true
 
-  if (sid) {
+  if (sid && !force) {
+    // 브라우저 탭에서 수동으로 프로젝트 선택할 때 (force 없음)
     sessionRoots.set(sid, newRoot)
     console.log("[viewer] session root:", sid.slice(0, 8), newRoot)
   } else {
     ROOT = newRoot
-    // sessionRoots는 지우지 않음: 브라우저에서 수동으로 선택한 세션 루트를
-    // 플러그인 호출이 덮어쓰면 안 됨. 세션 루트가 없는 탭만 ROOT를 따라감.
+    if (force) {
+      sessionRoots.clear()
+      console.log("[viewer] force open-project:", newRoot)
+    } else {
+      // 일반 플러그인 백그라운드 동기화: 수동 선택된 세션 루트는 유지
+      console.log("[viewer] global root:", ROOT)
+    }
     persistRoot(ROOT)
-    console.log("[viewer] global root:", ROOT)
   }
 
   res.json({ ok: true, root: newRoot })

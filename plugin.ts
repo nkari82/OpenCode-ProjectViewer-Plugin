@@ -300,28 +300,17 @@ async function openBrowser(url: string) {
   }
 }
 
-async function syncProjectToViewer(worktree: string) {
+// force=false: 백그라운드 동기화 — 브라우저가 수동 선택한 세션 루트는 유지
+// force=true : /open-view 전용 — sessionRoots 초기화로 모든 탭 강제 전환
+async function syncProjectToViewer(worktree: string, force = false) {
   if (!worktree) return
   try {
     await fetchWithTimeout(viewerUrl("/api/open-project"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: worktree }),
+      body: JSON.stringify({ path: worktree, force }),
     }, 2000)
-    pluginLog(`프로젝트 동기화: ${worktree}`)
-  } catch {}
-}
-
-// /open-view 전용: sessionRoots를 초기화해 모든 브라우저 탭이 새 프로젝트로 강제 전환됨.
-async function forceSyncProject(worktree: string) {
-  if (!worktree) return
-  try {
-    await fetchWithTimeout(viewerUrl("/api/force-project"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: worktree }),
-    }, 2000)
-    pluginLog(`강제 프로젝트 전환: ${worktree}`)
+    pluginLog(force ? `강제 프로젝트 전환: ${worktree}` : `프로젝트 동기화: ${worktree}`)
   } catch {}
 }
 
@@ -405,8 +394,8 @@ const plugin = async (input?: any, _options?: any): Promise<any> => {
           || input?.worktree
         pluginLog(`/open-view: worktree=${worktree || "(없음)"} cmdInput=${JSON.stringify(cmdInput)}`)
         if (worktree && worktree !== "/" && worktree.length > 2 && await pingServer()) {
-          // forceSyncProject: sessionRoots 초기화 → 기존 브라우저 탭도 강제 전환
-          await forceSyncProject(worktree)
+          // force=true: sessionRoots 초기화 → 기존 브라우저 탭도 강제 전환
+          await syncProjectToViewer(worktree, true)
         }
         await openBrowser(viewerUrl())
         pluginLog(`브라우저 열기 완료: ${viewerUrl()}`)
